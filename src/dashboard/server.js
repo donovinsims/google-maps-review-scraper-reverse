@@ -33,7 +33,12 @@ export function createDashboardServer({ dbPath = DEFAULT_DB, port = 7877 } = {})
   });
 
   app.get('/api/jobs', async (_req, res) => {
-    // Job history lives in the summary files under data/out/.
+    const store = await getStore();
+    const dbJobs = store.selectRecentJobs ? store.selectRecentJobs(20) : [];
+    if (dbJobs.length > 0) {
+      return res.json({ schemaVersion: 1, jobs: dbJobs });
+    }
+    // Fallback: summary files under data/out/.
     const dir = path.join(PROJECT_ROOT, 'data', 'out');
     let files = [];
     if (fs.existsSync(dir)) files = fs.readdirSync(dir).filter((f) => f.startsWith('run-') && f.endsWith('.json'));
@@ -60,7 +65,8 @@ export function createDashboardServer({ dbPath = DEFAULT_DB, port = 7877 } = {})
     res.send(toJsonExport(rows, { placeId: req.query.placeId ?? null }));
   });
 
-  app.get('*', (_req, res) => res.sendFile(path.join(PROJECT_ROOT, 'src', 'dashboard', 'static', 'index.html')));
+  // Express 5 pattern: regex fallback instead of the removed '*' route.
+  app.get(/^\/[^^]*/, (_req, res) => res.sendFile(path.join(PROJECT_ROOT, 'src', 'dashboard', 'static', 'index.html')));
 
   const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
   return server;

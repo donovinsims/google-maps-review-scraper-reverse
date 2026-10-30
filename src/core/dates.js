@@ -38,10 +38,21 @@ function monthIndexFromName(name, months = null) {
  * @returns {null | {iso: string, precision: 'day'|'week'|'month'|'year', relative: boolean}}
  */
 export function prsToDate(raw, nowMs = null, months = null) {
-  if (!raw) return null;
+  if (raw == null) return null;
   const now = nowMs ?? Date.now();
-  const s = raw.trim().toLowerCase().replace(/\u00a0/g, ' ');
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw > 1e14 ? Math.floor(raw / 1000) : (raw < 1e11 ? raw * 1000 : raw);
+    return { iso: new Date(ms).toISOString(), precision: 'minute', relative: false };
+  }
+  const s = String(raw).trim().toLowerCase().replace(/\u00a0/g, ' ');
   if (!s) return null;
+
+  // Unix epoch string (seconds or ms or microseconds)
+  if (/^\d{10,16}$/.test(s)) {
+    const num = Number(s);
+    const ms = num > 1e14 ? Math.floor(num / 1000) : (num < 1e11 ? num * 1000 : num);
+    return { iso: new Date(ms).toISOString(), precision: 'minute', relative: false };
+  }
 
   // Relative: "a|2|12 ... minutes|hours|days|weeks|months|years ago"
   const stem = s.replace(/^(?:about |just |almost |edited |edited\s+\w+\s+)+/u, '');

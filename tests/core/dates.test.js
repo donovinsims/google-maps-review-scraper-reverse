@@ -65,3 +65,23 @@ test('non-English month names parse with a locale table', () => {
 test('unknown month names return null', () => {
   assert.equal(prsToDate('Xyz 4, 2021', NOW), null);
 });
+
+test('epoch timestamps (number and string) parse to exact ISO minute precision', () => {
+  const numEpoch = 1722540159000;
+  const parsedNum = prsToDate(numEpoch);
+  assert.ok(parsedNum);
+  assert.equal(parsedNum.iso, new Date(numEpoch).toISOString());
+  assert.equal(parsedNum.precision, 'minute');
+  assert.equal(parsedNum.relative, false);
+
+  const microEpoch = 1722540159000000;
+  const parsedMicro = prsToDate(microEpoch);
+  assert.ok(parsedMicro);
+  assert.equal(parsedMicro.iso, new Date(numEpoch).toISOString());
+
+  const strEpoch = '1722540159000';
+  const parsedStr = prsToDate(strEpoch);
+  assert.ok(parsedStr);
+  assert.equal(parsedStr.iso, new Date(numEpoch).toISOString());
+});
+

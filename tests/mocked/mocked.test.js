@@ -108,3 +108,47 @@ test('rating normalization handles null and out-of-range without fabrication', (
   assert.equal(normalizeRating('0 stars').rating, null);
   assert.equal(normalizeRating('not-a-rating').rating, null);
 });
+
+// --- Job state & lifecycle tests ------------------------------------------
+test('store records and updates job lifecycle in SQLite', () => {
+  const s = memoryStore();
+  const jobId = 'job-test-1';
+  s.createJob({ id: jobId, config: { limit: 10 }, totalPlaces: 2 });
+  const initial = s.getJob(jobId);
+  assert.equal(initial.id, jobId);
+  assert.equal(initial.status, 'running');
+  assert.equal(initial.totalPlaces, 2);
+  assert.equal(initial.config?.limit, 10);
+
+  s.recordJobItem({ jobId, idx: 0, inputUrl: 'http://test/1', placeId: 'p1', status: 'done' });
+  s.recordJobItem({ jobId, idx: 1, inputUrl: 'http://test/2', placeId: null, status: 'failed', error: 'not found' });
+
+  const withItems = s.getJob(jobId);
+  assert.equal(withItems.items.length, 2);
+  assert.equal(withItems.items[0].status, 'done');
+  assert.equal(withItems.items[1].status, 'failed');
+
+  s.updateJobStatus(jobId, 'completed', 'all done');
+  const finished = s.getJob(jobId);
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.notes, 'all done');
+
+  const recents = s.selectRecentJobs(5);
+  assert.equal(recents.length, 1);
+  assert.equal(recents[0].id, jobId);
+});
+
+test('isPlaceCollected correctly detects existing places within threshold', () => {
+  const s = memoryStore();
+  assert.equal(s.isPlaceCollected('none'), false);
+  s.upsertBusinessMeta({ placeId: 'biz1', name: 'Biz 1', listingUrl: 'http://maps/biz1' });
+  assert.equal(s.isPlaceCollected('biz1'), true);
+});
+
+test('profile directory helpers sanitize names and resolve expected path', async () => {
+  const { getProfileDir, hasSavedProfile } = await import('../../src/collector/browser.js');
+  const dir = getProfileDir('/mock/root', 'my-team!@#');
+  assert.ok(dir.includes('my-team___'));
+  assert.equal(hasSavedProfile('/nonexistent/path', 'default'), false);
+});
+

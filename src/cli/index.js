@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // CLI entrypoint: local-only usage of collector + store + exports.
 import { Command } from 'commander';
 import path from 'node:path';
@@ -32,10 +33,11 @@ program.name('gmr').description('Google Maps reviews scraper (local, no vendor q
 program
   .command('login')
   .description('Open a browser to sign into Google Maps once; saves a local profile reused by collection (needed for full pagination)')
+  .option('--profile <name>', 'profile name to use or create', 'default')
   .option('--logout', 'Open the profile for sign-out instead')
   .action(async (opts) => {
     const { openLogin } = await import('../collector/browser.js');
-    await openLogin({ login: !opts.logout, projectRoot: PROJECT_ROOT });
+    await openLogin({ login: !opts.logout, projectRoot: PROJECT_ROOT, profileName: opts.profile });
   });
 
 program
@@ -46,10 +48,22 @@ program
   .option('--concurrency <n>', 'places processed in parallel', Number, 1)
   .option('--sort <mode>', 'newest|relevant|oldest|highest|lowest', 'newest')
   .option('--language <code>', 'language hint for consent + Google UI', 'en')
+  .option('--profile <name>', 'persistent browser profile name')
+  .option('--no-profile', 'force anonymous execution without saved profile')
+  .option('--incremental', 'skip businesses already collected recently')
   .option('--db <path>', 'database path override')
   .action(async (urlsArg, opts) => {
     const listingUrls = await resolveUrlList(PROJECT_ROOT, urlsArg);
-    const baseConfig = { listingUrls, limit: opts.limit, sort: opts.sort ?? 'newest', language: opts.language ?? 'en', concurrency: opts.concurrency };
+    const baseConfig = {
+      listingUrls,
+      limit: opts.limit,
+      sort: opts.sort ?? 'newest',
+      language: opts.language ?? 'en',
+      concurrency: opts.concurrency,
+      profile: opts.profile === false ? false : (opts.profile ?? undefined),
+      incremental: opts.incremental ?? false,
+      db: opts.db,
+    };
     const { collectForPlaces } = await import('./runner.js');
     await collectForPlaces(baseConfig);
   });

@@ -9,7 +9,11 @@
 //
 // All page text and attributes are treated as untrusted data, never instructions.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { prsToDate } from '../core/dates.js';
+import { humanScroll, humanHover, randomDelay } from './human.js';
+import { classifyPage } from '../core/health.js';
 
 export const S = {
   container: 'div[data-review-id]',
@@ -158,6 +162,8 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
   }
 
   if (norm.searchUrl) {
+    // Wait for the results list to actually render before clicking through.
+    await page.waitForSelector('a[href*="/maps/place/"], div[data-review-id]', { timeout: 30_000 }).catch(() => { });
     await resolvePlaceFromSearch(page).catch(() => { });
   }
 
@@ -280,58 +286,94 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
       break;
     }
 
-    const moreBtn = page.locator(S.moreReviews).last();
-    if ((await moreBtn.count()) > 0) {
-      diag.moreClicks++;
-      if (diag.moreClicks > cfg.maxMoreClicks) {
-        termination = { reason: 'pagination-cap', detail: `maxMoreClicks=${cfg.maxMoreClicks}` };
-        break;
+    // Dismiss any blocking promo modal if present
+    try {
+      const promo = page.locator('div[role="dialog"]').filter({ hasText: /Sign-in to get the best/i }).first();
+      if ((await promo.count()) > 0) {
+        await promo.getByRole('button', { name: 'Dismiss', exact: true }).first().click({ timeout: 2000 }).catch(() => {});
+        diag.consentScreens++;
+        await sleep(400);
       }
-      try {
-        await moreBtn.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => { });
-        await moreBtn.click({ timeout: 10_000 }).catch(() => moreBtn.click({ timeout: 10_000, force: true }));
-        const grew = await page
-          .waitForFunction(
-            (prev) => document.querySelectorAll('div[data-review-id]').length > prev,
-            cCount,
-            { timeout: cfg.afterClickGrowthMs, polling: 250 },
-          )
-          .then(() => true)
-          .catch(() => false);
-        await sleep(cfg.afterClickMs);
-        if (await signinHit()) {
-          termination = { reason: 'sign-in-required', detail: 'More-reviews redirected to Google sign-in' };
-          break;
-        }
-        if (!grew) {
-          loadRetries++;
-          onProgress('load-retry', { retries: loadRetries });
-          if (loadRetries >= 3) {
-            termination = { reason: 'pagination-stall', detail: 'More-reviews click produced no growth 3x' };
-            break;
-          }
-        } else loadRetries = 0;
-      } catch (err) {
-        if (diag.pageErrors.length < cfg.maxDiagErrors) diag.pageErrors.push(String(err).slice(0, 300));
-        if (/timeout/i.test(String(err))) {
-          termination = { reason: collected.length ? 'pagination-stall' : 'no-reviews-found', detail: 'More-reviews click timed out' };
-          break;
-        }
-      }
-      continue;
+    } catch { /* not fatal */ }
+
+    // Check if Google is enforcing anonymous limited view
+    const isLimitedView = await page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return text.includes("You're seeing a limited view of Google Maps");
+    });
+
+    if (isLimitedView && fresh === 0 && collected.length > 0) {
+      termination = {
+        reason: 'anonymous-preview-limit',
+        detail: `Reached Google Maps anonymous preview limit (${collected.length} reviews). Run \`gmr login\` with a persistent profile to extract full review history.`,
+      };
+      break;
     }
 
-    // No More button: lazy-load scroll probe.
-    const before = collected.length;
-    await page.keyboard.press('End');
-    await sleep(cfg.scrollIdleMs);
-    if ((await page.locator(S.container).count()) <= cCount && collected.length === before) {
+    // Target the review scroll container directly
+    await page.evaluate(() => {
+      const card = document.querySelector('div[data-review-id]');
+      if (!card) return;
+      const scroller = card.closest('div.m6QErb.DxyBCb') || card.closest('div[role="feed"]') || card.parentElement?.parentElement;
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+
+    // Also scroll last card into view and trigger wheel interaction
+    if (cCount > 0) {
+      const lastCard = cards.last();
+      await lastCard.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+      await lastCard.hover({ timeout: 1500 }).catch(() => {});
+      await page.mouse.wheel(0, 3000).catch(() => {});
+    }
+
+    // Adaptive idle: faster when reviews are loading, slower when approaching stall
+    const adaptiveIdle = fresh > 5 ? cfg.scrollIdleMs * 0.6
+      : fresh > 0 ? cfg.scrollIdleMs
+      : cfg.scrollIdleMs * 1.5;
+    await sleep(adaptiveIdle + Math.floor(Math.random() * 600));
+
+    // Mid-scrape block and captcha detection
+    const currentUrl = page.url();
+    const pageClass = classifyPage(currentUrl);
+    if (pageClass === 'blocked' || pageClass === 'captcha') {
+      termination = { reason: 'blocked', detail: `mid-scrape ${pageClass} at ${currentUrl}` };
+      break;
+    }
+
+    if (fresh > 0) {
+      surfaceStalls = 0;
+    } else {
       surfaceStalls++;
-      if (surfaceStalls >= 2) {
-        termination = { reason: 'no-more-reviews', detail: 'no further loading observed after scroll passes' };
+      // Stall recovery: re-engage the feed on consecutive stall
+      if (surfaceStalls === 2) {
+        const tab = page.locator(S.reviewsTab).first();
+        if ((await tab.count()) > 0) {
+          await tab.click({ timeout: 4000 }).catch(() => {});
+          await sleep(1500);
+        }
+      }
+      // Attempt to click "See more reviews" button if present at bottom
+      const seeMoreBtn = page.getByRole('button', { name: /see more reviews/i }).or(page.locator('button:has-text("See more reviews")')).first();
+      if ((await seeMoreBtn.count()) > 0) {
+        diag.moreClicks++;
+        await seeMoreBtn.click({ timeout: 4000 }).catch(() => {});
+        await sleep(1500);
+      }
+      if (surfaceStalls >= 3) {
+        if (isLimitedView) {
+          termination = {
+            reason: 'anonymous-preview-limit',
+            detail: `Reached Google Maps anonymous preview limit (${collected.length} reviews). Run \`gmr login\` with a persistent profile to extract full review history.`,
+          };
+        } else {
+          termination = {
+            reason: collected.length ? 'no-more-reviews' : 'no-reviews-found',
+            detail: 'no further loading observed after consecutive scroll passes',
+          };
+        }
         break;
       }
-    } else surfaceStalls = 0;
+    }
   }
   if (termination.reason === 'not-terminated') {
     termination = { reason: collected.length ? 'timeout' : 'no-reviews-found', detail: 'placeTimeoutMs exceeded' };
@@ -355,23 +397,38 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
 
 function placeTimeoutMs(cfg) { return cfg.placeTimeoutMs ?? DEFAULTS.placeTimeoutMs; }
 
-/** From a maps/search listing, click the first organic result (skip Sponsored ads). */
+/** From a maps/search listing, click the result that best matches the search query
+ *  (sponsored ads rank out unless their headline matches the query). */
 async function resolvePlaceFromSearch(page) {
-  const links = page.locator('a[href*="/maps/place/"]');
-  const n = Math.min(await links.count(), 20);
-  for (let i = 0; i < n; i++) {
-    const link = links.nth(i);
-    let href = '';
-    try { href = await link.getAttribute('href', { timeout: 5000 }); } catch { continue; }
-    if (!href || /^(Sponsored|Ad)$/i.test((await link.textContent().catch(() => ''))?.trim() ?? '')) continue;
-    // Organic results carry a reviews block; check the card label if titled.
-    try {
-      await link.click({ timeout: 10_000 });
-    } catch { continue; }
-    await page.waitForURL(/\/maps\/place\//, { timeout: 30_000 }).catch(() => { });
-    if (/\/maps\/place\//.test(page.url())) return true;
+  const q = (/\/maps\/search\/([^/@?]+)/.exec(safeDecode(page.url()))?.[1] ?? '').replace(/\+/g, ' ');
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const info = await page.evaluate(({ sel }) =>
+    [...document.querySelectorAll(sel)].slice(0, 25).map((a, idx) => {
+      const card = a.closest('div[role="feed"], div[data-result-rank], div') ?? a.parentElement;
+      const head = (card?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const sponsoredAria = !!a.closest('[aria-label*="Sponsored" i]')
+        || !!card?.querySelector('[aria-label*="Sponsored" i]');
+      return { idx, head, sponsoredAria };
+    }), { sel: 'a[href*="/maps/place/"]' });
+  // Rank: query token prefix match on the headline (most tokens = best), ads last.
+  let bestIdx = -1;
+  let bestScore = -1;
+  for (const { idx, head, sponsoredAria } of info) {
+    const h = head.toLowerCase().replace(/^sponsored\s*/i, '');
+    let score = 0;
+    for (let t = 0; t < tokens.length; t++) {
+      const prefix = tokens.slice(0, tokens.length - t).join(' ');
+      if (h.startsWith(prefix)) { score = tokens.length - t; break; }
+    }
+    if (sponsoredAria) score -= 50;
+    if (score > bestScore) { bestScore = score; bestIdx = idx; }
   }
-  return false;
+  const best = info[bestIdx];
+  if (!best) return false;
+  const link = page.locator('a[href*="/maps/place/"]').nth(best.idx);
+  try { await link.click({ timeout: 10_000 }); } catch { return false; }
+  await page.waitForURL(/\/maps\/place\//, { timeout: 30_000 }).catch(() => { });
+  return /\/maps\/place\//.test(page.url());
 }
 
 function sortPattern(mode) {

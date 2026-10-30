@@ -18,7 +18,7 @@ export function createStore(dbPath) {
         rating = COALESCE(excluded.rating, rating),
         lastSeenAt = ?`).run(
           meta.placeId, meta.name ?? null, meta.listingUrl ?? null, meta.inputUrl ?? null,
-          meta.reviewsCount ?? null, meta.rating ?? null, now, meta.lastSeenAt ?? null, now);
+          meta.reviewsCount ?? null, meta.rating ?? null, now, meta.lastSeenAt ?? now, now);
   }
 
   function upsertReview(rec, runId) {
@@ -86,9 +86,63 @@ export function createStore(dbPath) {
     return db.prepare('SELECT COUNT(*) AS n FROM reviews').get().n;
   }
 
+  function createJob({ id, config = {}, totalPlaces = 0, notes = null }) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO jobs (id, createdAt, updatedAt, status, config, totalPlaces, notes)
+      VALUES (?, ?, ?, 'running', ?, ?, ?)
+    `).run(id, now, now, JSON.stringify(config), totalPlaces, notes);
+  }
+
+  function updateJobStatus(jobId, status, notes = null) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE jobs SET status = ?, updatedAt = ?, notes = COALESCE(?, notes)
+      WHERE id = ?
+    `).run(status, now, notes, jobId);
+  }
+
+  function recordJobItem({ jobId, idx, inputUrl, placeId = null, status = 'pending', attempt = 1, error = null, termination = null }) {
+    const now = new Date().toISOString();
+    const termJson = termination ? JSON.stringify(termination) : null;
+    db.prepare(`
+      INSERT INTO job_items (jobId, idx, inputUrl, placeId, status, attempt, error, termination, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(jobId, idx) DO UPDATE SET
+        placeId = COALESCE(excluded.placeId, placeId),
+        status = excluded.status,
+        attempt = excluded.attempt,
+        error = excluded.error,
+        termination = excluded.termination,
+        updatedAt = excluded.updatedAt
+    `).run(jobId, idx, inputUrl, placeId, status, attempt, error, termJson, now);
+  }
+
+  function getJob(jobId) {
+    const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+    if (!job) return null;
+    const items = db.prepare('SELECT * FROM job_items WHERE jobId = ? ORDER BY idx ASC').all(jobId);
+    return { ...job, config: job.config ? JSON.parse(job.config) : null, items };
+  }
+
+  function selectRecentJobs(limit = 20) {
+    const jobs = db.prepare('SELECT * FROM jobs ORDER BY createdAt DESC LIMIT ?').all(limit);
+    return jobs.map((j) => ({ ...j, config: j.config ? JSON.parse(j.config) : null }));
+  }
+
+  function isPlaceCollected(placeId, maxAgeDays = 30) {
+    if (!placeId) return false;
+    const row = db.prepare('SELECT lastSeenAt FROM businesses WHERE placeId = ?').get(placeId);
+    if (!row || !row.lastSeenAt) return false;
+    if (maxAgeDays == null) return true;
+    const ageMs = Date.now() - new Date(row.lastSeenAt).getTime();
+    return ageMs < maxAgeDays * 86_400_000;
+  }
+
   return {
     database: db,
     upsertBusinessMeta, upsertReview, countReviews, selectReviews, selectPlaces,
     deleteReviews, retentionVacuum,
+    createJob, updateJobStatus, recordJobItem, getJob, selectRecentJobs, isPlaceCollected,
   };
 }
