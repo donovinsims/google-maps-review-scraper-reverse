@@ -1,0 +1,88 @@
+{
+  "ranAt": "2026-10-30T19:23:33.896Z",
+  "input": {
+    "url": "https://www.google.com/maps/search/Tartine+Bakery+San+Francisco/?hl=en&gl=us",
+    "maxReviews": 25
+  },
+  "place": {
+    "name": "Tartine Bakery",
+    "placeId": "0x808f7e1807365605:0x601f7a97f0ce6c6b",
+    "rating": null,
+    "reviewsCount": 5987,
+    "url": "https://www.google.com/maps/place/Tartine+Bakery/@37.7614347,-122.4336093,16z/data=!4m10!1m2!2m1!1sTartine+Bakery+San+Francisco!3m6!1s0x808f7e1807365605:0x601f7a97f0ce6c6b!8m2!3d37.7614347!4d-122.4240821!15sChxUYXJ0aW5lIEJha2VyeSBTYW4gRnJhbmNpc2NvIgOIAQFaHiIcdGFydGluZSBiYWtlcnkgc2FuIGZyYW5jaXNjb5IBBmJha2VyeZoBRENpOURRVWxSUVVOdlpFTm9kSGxqUmpsdlQycEdTbVZWU1RWWFNGSlBUakpPTTFSV1VrZFNWa1l3V1c1d2MxbHNSUkFC4AEA-gEECAAQOA!16s%2Fm%2F03gmfm5?hl=en&gl=us"
+  },
+  "reviews": [
+    {
+      "reviewId": "Ci9DQUlRQUNvZENodHljRjlvT2poalh6RlBTelJJV0hkVGVuSkViV1E0TmtkekxWRRAB",
+      "reviewerName": "Sara",
+      "reviewerProfileUrl": "https://www.google.com/maps/contrib/103912010454190073875/reviews?hl=en-US",
+      "rating": 5,
+      "ratingRaw": "5 stars",
+      "reviewText": "Came in the mid afternoon on a Weekday and there were still pastries left! Went on another time on a sunny weekend and line was out the door but line gradually moves. The passion fruit lime coconut cake slice is SO good. Was very tempted to go back to get another. Perfect to take to Dolores park on a sunny day. Loved their chocolate croissant - perfectly crispy on the outside with a flaky interior. Would def again. Personally, it’s slightly better than Arsicault (because of the crispy exterior). Wasn’t a huge fan of their cherry almond frangipane croissant though. Croissant itself was good but the almond frangipane wasn’t my favorite flavor. Plus paired with the dried cherries. Part of me was expecting cherry compote and not actual dried berries. Blueberry buckwheat scone is good if you want something a little healthy. Definitely has more of a bread-like crumb. Ham & cheese croissant is good but only one piece of ham. Definitely heat it up before consuming. Friendly staff!",
+      "originalLanguage": null,
+      "translatedByGoogle": null,
+      "publishedDateRaw": "Edited 3 months ago",
+      "publishedDateParsed": "2026-08-01T19:22:39.189Z",
+      "datePrecision": "month",
+      "ownerResponse": "Edgar, we're delighted to hear that our passion fruit lime coconut cake and chocolate croissant were highlights for you! We're glad that you found our service friendly too. We appreciate your feedback on the cherry almond frangipane … More",
+      "ownerResponseDateRaw": "Edited 3 months ago",
+      "ownerResponseDateParsed": "2026-08-01T19:22:39.194Z",
+      "ownerResponseDatePrecision": "month",
+      "reviewUrl": "https://www.google.com/maps/place/?hl=en&gl=us!1s0x808f7e1807365605%3A0x601f7a97f0ce6c6b!8sCi9DQUlRQUNvZENodHljRjlvT2poalh6RlBTelJJV0hkVGVuSkViV1E0TmtkekxWRRAB",
+      "collectedAt": "2026-10-30T19:22:39.194Z"
+    },
+    {
+      "reviewId": "Ci9DQUlRQUNvZENodHljRjlvT2pRMldGazJVVlk0YmpOcVdXWnBORXhqZWtseGNVRRAB",
+      "reviewerName": "Sandhya Janardhanan",
+      "reviewerProfileUrl": "https://www.google.com/maps/contrib/103020527510405539105/reviews?hl=en-US",
+      "rating": 5,
+      "ratingRaw": "5 stars",
+      "reviewText": "Breakfast stop on a sunny SF Monday. Had the egg sando on a buttermilk loaf, gougere, cafe au latte and bread pudding. Loved the crusty cheese exterior with soft aerated bread of gougere. The bread pudding was a sweet fruity custardy heaven . Great egg sando too.",
+      "originalLanguage": null,
+      "translatedByGoogle": null,
+      "publishedDateRaw": "5 months ago",
+      "publishedDateParsed": "2026-06-02T19:22:39.218Z",
+      "datePrecision": "month",
+      "ownerResponse": "Hi Sandhya, we're so happy to hear you enjoyed your breakfast with us! Our egg sando and gougère are definitely crowd favorites. We love that you enjoyed the bread pudding - it's a sweet treat indeed! Thanks for taking the time to share your experience. We look forward to welcoming you back to Tartine Bakery soon.",
+      "ownerResponseDateRaw": "5 months ago",
+      "ownerResponseDateParsed": "2026-06-02T19:22:39.218Z",
+      "ownerResponseDatePrecision": "month",
+      "reviewUrl": "https://www.google.com/maps/place/?hl=en&gl=us!1s0x808f7e1807365605%3A0x601f7a97f0ce6c6b!8sCi9DQUlRQUNvZENodHljRjlvT2pRMldGazJVVlk0YmpOcVdXWnBORXhqZWtseGNVRRAB",
+      "collectedAt": "2026-10-30T19:22:39.218Z"
+    },
+    {
+      "reviewId": "Ci9DQUlRQUNvZENodHljRjlvT2xkU1R6QTRlbk5UZW1oTlowSk9WVlF6UVdKRFIxRRAB",
+      "reviewerName": "Philip Rogers",
+      "reviewerProfileUrl": "https://www.google.com/maps/contrib/105699106069347558130/reviews?hl=en-US",
+      "rating": 5,
+      "ratingRaw": "5 stars",
+      "reviewText": "We heard great food, long lines, and hard to find parking. We were able to find street parking ok and only had to wait for 2 people in front of us. Oh my, everything was delicious! Friendly staff. Looking forward to coming back!",
+      "originalLanguage": null,
+      "translatedByGoogle": null,
+      "publishedDateRaw": "2 months ago",
+      "publishedDateParsed": "2026-08-31T19:22:39.235Z",
+      "datePrecision": "month",
+      "ownerResponse": "Hi Philip, we're delighted to hear you enjoyed your visit to Tartine! It sounds like you had a wonderful experience with our delicious food and friendly staff. Your feedback truly brightens our day. We're already looking forward to your next visit!",
+      "ownerResponseDateRaw": "2 months ago",
+      "ownerResponseDateParsed": "2026-08-31T19:22:39.235Z",
+      "ownerResponseDatePrecision": "month",
+      "reviewUrl": "https://www.google.com/maps/place/?hl=en&gl=us!1s0x808f7e1807365605%3A0x601f7a97f0ce6c6b!8sCi9DQUlRQUNvZENodHljRjlvT2xkU1R6QTRlbk5UZW1oTlowSk9WVlF6UVdKRFIxRRAB",
+      "collectedAt": "2026-10-30T19:22:39.235Z"
+    }
+  ],
+  "termination": {
+    "reason": "pagination-stall",
+    "detail": "More-reviews click produced no growth 3x",
+    "collectedCount": 3,
+    "duplicates": 15,
+    "duplicateRate": 0.833,
+    "durationMs": 57958
+  },
+  "diagnostics": {
+    "moreClicks": 3,
+    "expandClicks": 3,
+    "consentScreens": 0,
+    "staleElements": 5,
+    "pageErrors": []
+  }
+}

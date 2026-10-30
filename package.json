@@ -1,0 +1,22 @@
+{
+  "name": "gmaps-reviews",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/cli/index.js",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
+    "cli": "node src/cli/index.js",
+    "run:all": "node src/cli/index.js run urls.txt",
+    "export:csv": "node src/cli/index.js export --format csv --out data/export/reviews.csv",
+    "export:json": "node src/cli/index.js export --format json --out data/export/reviews.json",
+    "serve": "node src/cli/index.js serve",
+    "poc": "node scripts/poc.mjs"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "express": "^4.21.0",
+    "playwright": "^1.50.0"
+  },
+  "keywords": ["google-maps", "reviews", "scraper", "local"],
+  "license": "MIT"
+}

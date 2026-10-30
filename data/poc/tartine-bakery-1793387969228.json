@@ -1,0 +1,30 @@
+{
+  "ranAt": "2026-10-30T19:19:29.228Z",
+  "input": {
+    "url": "https://www.google.com/maps/search/Tartine+Bakery+San+Francisco/?hl=en&gl=us",
+    "maxReviews": 30
+  },
+  "place": {
+    "name": "Tartine Bakery",
+    "placeId": "0x808f7e1807365605:0x601f7a97f0ce6c6b",
+    "rating": null,
+    "reviewsCount": 5987,
+    "url": "https://www.google.com/maps/place/Tartine+Bakery/@37.7614347,-122.4336093,16z/data=!4m10!1m2!2m1!1sTartine+Bakery+San+Francisco!3m6!1s0x808f7e1807365605:0x601f7a97f0ce6c6b!8m2!3d37.7614347!4d-122.4240821!15sChxUYXJ0aW5lIEJha2VyeSBTYW4gRnJhbmNpc2NvIgOIAQFaHiIcdGFydGluZSBiYWtlcnkgc2FuIGZyYW5jaXNjb5IBBmJha2VyeZoBRENpOURRVWxSUVVOdlpFTm9kSGxqUmpsdlQycEdTbVZWU1RWWFNGSlBUakpPTTFSV1VrZFNWa1l3V1c1d2MxbHNSUkFC4AEA-gEECAAQOA!16s%2Fm%2F03gmfm5?hl=en&gl=us"
+  },
+  "reviews": [],
+  "termination": {
+    "reason": "pagination-stall",
+    "detail": "More-reviews click produced no growth 3x",
+    "collectedCount": 0,
+    "duplicates": 0,
+    "duplicateRate": 0,
+    "durationMs": 59150
+  },
+  "diagnostics": {
+    "moreClicks": 3,
+    "expandClicks": 3,
+    "consentScreens": 0,
+    "staleElements": 5,
+    "pageErrors": []
+  }
+}

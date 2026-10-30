@@ -1,0 +1,13 @@
+node_modules/
+.freebuff/
+.DS_Store
+*.log
+.env
+.env*.local
+
+# SQLite & local runtime data
+*.db
+*.db-shm
+*.db-wal
+data/out/
+data/poc/*.png
