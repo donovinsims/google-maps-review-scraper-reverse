@@ -16,15 +16,25 @@
 <p><a href="/api/export/csv">Export all reviews (CSV)</a> · <a href="/api/export/json">Export all (JSON)</a></p>
 <div id="detail"></div>
 <script>
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 fetch('/api/places').then(r=>r.json()).then(({places})=>{
   const t=document.querySelector('#places tbody');
   for(const p of places){
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td><a href="#">${p.placeId}</a></td><td>${p.name??''}</td><td>${p.reviewCount??0}</td>`;
+    tr.innerHTML=`<td><a href="#">${esc(p.placeId)}</a></td><td>${esc(p.name??'')}</td><td>${Number(p.reviewCount??0)}</td>`;
     tr.querySelector('a').onclick=async e=>{e.preventDefault();
       const r=await fetch(`/api/places/${encodeURIComponent(p.placeId)}/reviews`).then(x=>x.json());
-      document.getElementById('detail').innerHTML=`<h4>${p.name??p.placeId}</h4><table><thead><tr><th>Reviewer</th><th>Rating</th><th>Date</th><th>Text</th></tr></thead><tbody>`+
-        r.reviews.slice(0,50).map(r2=>`<tr><td>${r2.reviewerName??''}</td><td>${r2.rating??''}</td><td>${r2.publishedDateRaw??''}</td><td>${(r2.reviewText??'').slice(0,150)}</td></tr>`).join('')+`</tbody></table>`;
+      document.getElementById('detail').innerHTML=`<h4>${esc(p.name??p.placeId)}</h4><table><thead><tr><th>Reviewer</th><th>Rating</th><th>Date</th><th>Text</th></tr></thead><tbody>`+
+        r.reviews.slice(0,50).map(r2=>`<tr><td>${esc(r2.reviewerName??'')}</td><td>${esc(r2.rating??'')}</td><td>${esc(r2.publishedDateRaw??'')}</td><td>${esc((r2.reviewText??'').slice(0,150))}</td></tr>`).join('')+`</tbody></table>`;
     };
     t.appendChild(tr);
   }
@@ -35,7 +45,7 @@ fetch('/api/jobs').then(r=>r.json()).then(({jobs})=>{
     const d=j.data;if(!Array.isArray(d))continue;
     const collected=d.reduce((s,x)=>s+(x.count??0),0);
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${j.name}</td><td>${d.length}</td><td>${collected}</td><td>${d.map(x=>x.terminated?.reason??'').join(', ')}</td>`;
+    tr.innerHTML=`<td>${esc(j.name)}</td><td>${Number(d.length)}</td><td>${Number(collected)}</td><td>${esc(d.map(x=>x.terminated?.reason??'').join(', '))}</td>`;
     t.appendChild(tr);
   }
 });

@@ -61,6 +61,22 @@ export function createStore(dbPath) {
     return true;
   }
 
+  function upsertReviews(records, runId) {
+    if (!records || !records.length) return 0;
+    let count = 0;
+    db.exec('BEGIN');
+    try {
+      for (const rec of records) {
+        if (upsertReview(rec, runId)) count++;
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    return count;
+  }
+
   function countReviews(placeId) {
     if (placeId) return db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE placeId = ?').get(placeId).n;
     return db.prepare('SELECT COUNT(*) AS n FROM reviews').get().n;
@@ -141,7 +157,7 @@ export function createStore(dbPath) {
 
   return {
     database: db,
-    upsertBusinessMeta, upsertReview, countReviews, selectReviews, selectPlaces,
+    upsertBusinessMeta, upsertReview, upsertReviews, countReviews, selectReviews, selectPlaces,
     deleteReviews, retentionVacuum,
     createJob, updateJobStatus, recordJobItem, getJob, selectRecentJobs, isPlaceCollected,
   };

@@ -27,7 +27,7 @@ export function ensureBrowserInstalled() {
   }
 }
 
-export async function launchBatchCollector(urls, config = {}, onComplete = async () => ({})) {
+export async function launchBatchCollector(urls, config = {}, onComplete = async () => ({}), onBatch = async () => ({})) {
   ensureBrowserInstalled();
 
   const summary = [];
@@ -124,6 +124,14 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
               sortMode: config.sort === 'default' ? undefined : config.sort,
               maxReviews: config.limit,
               language: { hl: config.language?.split('-')[0] ?? 'en', gl: 'us' },
+              overrides: {
+                incremental: config.incremental,
+                isPlaceCollected: config.isPlaceCollected,
+              },
+            }, (event, data) => {
+              if (event === 'stream-batch' && onBatch) {
+                onBatch(data, listingUrl, n - 1).catch(() => {});
+              }
             });
           },
           {

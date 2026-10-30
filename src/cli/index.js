@@ -50,7 +50,10 @@ program
   .option('--language <code>', 'language hint for consent + Google UI', 'en')
   .option('--profile <name>', 'persistent browser profile name')
   .option('--no-profile', 'force anonymous execution without saved profile')
+  .option('--headless', 'run in headless mode', false)
+  .option('--proxy <url>', 'proxy server URL (http://user:pass@host:port or socks5://...)')
   .option('--incremental', 'skip businesses already collected recently')
+  .option('--resume <jobId>', 'resume unfinished collection job')
   .option('--db <path>', 'database path override')
   .action(async (urlsArg, opts) => {
     const listingUrls = await resolveUrlList(PROJECT_ROOT, urlsArg);
@@ -61,7 +64,10 @@ program
       language: opts.language ?? 'en',
       concurrency: opts.concurrency,
       profile: opts.profile === false ? false : (opts.profile ?? undefined),
+      headless: opts.headless,
+      proxy: opts.proxy,
       incremental: opts.incremental ?? false,
+      resume: opts.resume,
       db: opts.db,
     };
     const { collectForPlaces } = await import('./runner.js');

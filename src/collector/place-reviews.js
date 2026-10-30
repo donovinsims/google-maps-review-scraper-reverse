@@ -137,6 +137,20 @@ export function consentCookies() {
   ];
 }
 
+async function pickPlaceRating(page) {
+  try {
+    const text = await page.locator('div.F7nice span[aria-hidden="true"], span.fontDisplayLarge').first().textContent({ timeout: 2000 });
+    const num = parseFloat(text?.trim()?.replace(',', '.'));
+    if (!isNaN(num) && num >= 1 && num <= 5) return num;
+  } catch {}
+  try {
+    const aria = await page.locator('span.ceNzKf, div.F7nice span[aria-label*="star" i]').first().getAttribute('aria-label', { timeout: 2000 });
+    const m = /([1-5](?:[.,]\d)?)\s*star/i.exec(aria ?? '');
+    if (m) return parseFloat(m[1].replace(',', '.'));
+  } catch {}
+  return null;
+}
+
 /**
  * Collect reviews for one place.
  * @param {import('playwright').Page} page
@@ -164,7 +178,10 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
   if (norm.searchUrl) {
     // Wait for the results list to actually render before clicking through.
     await page.waitForSelector('a[href*="/maps/place/"], div[data-review-id]', { timeout: 30_000 }).catch(() => { });
-    await resolvePlaceFromSearch(page).catch(() => { });
+    const resolved = await resolvePlaceFromSearch(page).catch(() => false);
+    if (!resolved && !/\/maps\/place\//.test(page.url())) {
+      termination = { reason: 'search-mismatch', detail: `could not match query to a business listing: ${norm.searchUrl}` };
+    }
   }
 
   if (norm.shortLink) {
@@ -188,6 +205,7 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
       .catch(() => false);
 
     place.name = await pickPlaceName(page);
+    place.rating = await pickPlaceRating(page);
 
     // Review count: Reviews tab label; fallback to the More-reviews button label.
     const tabLabel = panelAppeared
@@ -206,17 +224,32 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
     place.placeId = /!1s([A-Za-z0-9%]+:0x[0-9a-f]+)/i.exec(dec)?.[1]
       ?? /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i.exec(finalUrl)?.[1]
       ?? /!1s([A-Za-z0-9:_-]+)/.exec(dec)?.[1]
+      ?? /(0x[0-9a-f]+:0x[0-9a-f]+)/i.exec(finalUrl)?.[1]
       ?? null;
 
-    if (place.reviewsCount) {
-      const opened = await ensureFeed(page);
-      if (!opened && !panelAppeared) { /* classification below */ }
-    } else if (!panelAppeared && (await page.locator(S.container).count()) === 0) {
-      const body = clean((await page.locator('body').textContent())?.slice(0, 500));
+    if (!place.placeId) {
       termination = {
-        reason: /no review/i.test(body ?? '') ? 'no-reviews' : 'structure-unknown',
-        detail: body?.slice(0, 160),
+        reason: 'missing-place-id',
+        detail: `unable to resolve stable place ID from URL: ${finalUrl}`,
       };
+    } else if (cfg.incremental && cfg.isPlaceCollected?.(place.placeId)) {
+      termination = {
+        reason: 'skipped-incremental',
+        detail: `business ${place.placeId} already collected recently`,
+      };
+    }
+
+    if (termination.reason === 'not-terminated') {
+      if (place.reviewsCount) {
+        const opened = await ensureFeed(page);
+        if (!opened && !panelAppeared) { /* classification below */ }
+      } else if (!panelAppeared && (await page.locator(S.container).count()) === 0) {
+        const body = clean((await page.locator('body').textContent())?.slice(0, 500));
+        termination = {
+          reason: /no review/i.test(body ?? '') ? 'no-reviews' : 'structure-unknown',
+          detail: body?.slice(0, 160),
+        };
+      }
     }
 
     // Sort via the public sort button when requested (requires the full tabs view);
@@ -260,6 +293,7 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
     }
 
     let fresh = 0;
+    const batchRecs = [];
     const cards = page.locator(S.container);
     const cCount = await cards.count();
     for (let i = 0; i < cCount; i++) {
@@ -273,15 +307,20 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
         if (seen.has(rec.reviewId)) { duplicates++; continue; }
         seen.add(rec.reviewId);
         collected.push(rec);
+        batchRecs.push(rec);
         fresh++;
       } catch (err) {
         diag.staleElements++;
         if (diag.pageErrors.length < cfg.maxDiagErrors) diag.pageErrors.push(String(err).slice(0, 300));
       }
     }
+    if (batchRecs.length > 0) {
+      onProgress('stream-batch', { place, reviews: batchRecs });
+    }
     onProgress('page-batch', { fresh, total: collected.length, duplicates });
 
     if (input.maxReviews && collected.length >= input.maxReviews) {
+      collected.length = input.maxReviews; // Truncate strictly to requested limit
       termination = { reason: 'limit-reached', detail: `maxReviews=${input.maxReviews}` };
       break;
     }
@@ -402,6 +441,8 @@ function placeTimeoutMs(cfg) { return cfg.placeTimeoutMs ?? DEFAULTS.placeTimeou
 async function resolvePlaceFromSearch(page) {
   const q = (/\/maps\/search\/([^/@?]+)/.exec(safeDecode(page.url()))?.[1] ?? '').replace(/\+/g, ' ');
   const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+
   const info = await page.evaluate(({ sel }) =>
     [...document.querySelectorAll(sel)].slice(0, 25).map((a, idx) => {
       const card = a.closest('div[role="feed"], div[data-result-rank], div') ?? a.parentElement;
@@ -410,19 +451,26 @@ async function resolvePlaceFromSearch(page) {
         || !!card?.querySelector('[aria-label*="Sponsored" i]');
       return { idx, head, sponsoredAria };
     }), { sel: 'a[href*="/maps/place/"]' });
-  // Rank: query token prefix match on the headline (most tokens = best), ads last.
+
+  // Rank: query token match on the headline (most matching tokens = best), ads penalized.
   let bestIdx = -1;
-  let bestScore = -1;
+  let bestScore = 0; // Must be strictly positive
   for (const { idx, head, sponsoredAria } of info) {
     const h = head.toLowerCase().replace(/^sponsored\s*/i, '');
-    let score = 0;
-    for (let t = 0; t < tokens.length; t++) {
-      const prefix = tokens.slice(0, tokens.length - t).join(' ');
-      if (h.startsWith(prefix)) { score = tokens.length - t; break; }
+    let matched = 0;
+    for (const tok of tokens) {
+      if (h.includes(tok)) matched++;
     }
+    let score = matched;
+    if (h.startsWith(tokens[0])) score += 1;
     if (sponsoredAria) score -= 50;
     if (score > bestScore) { bestScore = score; bestIdx = idx; }
   }
+
+  // Require matching at least 1 token (or half the tokens for long queries)
+  const minRequired = Math.max(1, Math.floor(tokens.length * 0.4));
+  if (bestIdx === -1 || bestScore < minRequired) return false;
+
   const best = info[bestIdx];
   if (!best) return false;
   const link = page.locator('a[href*="/maps/place/"]').nth(best.idx);
@@ -506,7 +554,7 @@ function finalizeRecord(raw, cfg, place) {
   const when = prsToDate(stripEdited(raw.publishedDateRaw), Date.now(), null);
   const respWhen = prsToDate(stripEdited(raw.ownerResponseDateRaw), Date.now(), null);
   const reviewUrl = place.placeId
-    ? `https://www.google.com/maps/place/?hl=${cfg.hl}&gl=${cfg.gl}!1s${encodeURIComponent(place.placeId)}!8s${encodeURIComponent(String(raw.reviewId))}`
+    ? `https://www.google.com/maps/place/?data=!1s${encodeURIComponent(place.placeId)}!8s${encodeURIComponent(String(raw.reviewId))}&hl=${cfg.hl}&gl=${cfg.gl}`
     : null;
   return {
     reviewId: String(raw.reviewId),
