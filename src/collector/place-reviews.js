@@ -126,6 +126,7 @@ export const DEFAULTS = {
   maxMoreClicks: 600,
   expandBatch: 80,
   maxDiagErrors: 40,
+  feedRecoverMs: 10_000,
 };
 
 /** Cookies that suppress consent/promo chrome for anonymous visitors (public behavior, no auth). */
@@ -277,7 +278,9 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
     }
     // Feed re-renders transiently clear cards; always sample a settled list.
     if ((await page.locator(S.container).count()) === 0) {
-      const appeared = await ensureFeed(page, { quick: true });
+      // F24: Google clears the feed transiently while loading/re-rendering.
+      // Wait, nudge the scroller, wait again, then try the full ensureFeed before giving up.
+      const appeared = await recoverFeed(page, cfg, diag);
       if (!appeared) {
         termination = { reason: collected.length ? 'pagination-stall' : 'structure-unknown', detail: 'review feed failed to (re)render' };
         break;
@@ -541,6 +544,19 @@ async function ensureFeed(page, { quick = false } = {}) {
     if (await page.waitForSelector(S.container, { timeout: 10_000 }).then(() => true).catch(() => false)) return true;
   } catch { /* fall through */ }
   return await mounted();
+}
+
+/** F24: recover from a transiently empty feed instead of terminating on one sample. */
+async function recoverFeed(page, cfg, diag) {
+  const waitCards = (ms) => page.waitForSelector(S.container, { timeout: ms }).then(() => true).catch(() => false);
+  const ms = cfg.feedRecoverMs ?? DEFAULTS.feedRecoverMs;
+  if (await waitCards(ms)) { diag.feedRecoveries = (diag.feedRecoveries ?? 0) + 1; return true; }
+  await page.mouse.wheel(0, -400).catch(() => {});
+  await page.mouse.wheel(0, 800).catch(() => {});
+  if (await waitCards(ms)) { diag.feedRecoveries = (diag.feedRecoveries ?? 0) + 1; return true; }
+  const ok = await ensureFeed(page);
+  if (ok) diag.feedRecoveries = (diag.feedRecoveries ?? 0) + 1;
+  return ok;
 }
 
 /** Dates may render as "Edited 3 months ago"; raw stays verbatim, parsing ignores the prefix. */
