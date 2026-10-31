@@ -23,3 +23,10 @@ test('F24: missing sort option terminates sort-unavailable instead of silently u
     scrapePlaceReviews(await ctx.newPage(), { url: PLACE_URL, sortMode: 'newest', maxReviews: 15, overrides: FAST }));
   assert.equal(res.termination.reason, 'sort-unavailable');
 });
+
+test('F21: limited view without a Reviews tab terminates limited-view, not structure-unknown', { timeout: 120_000 }, async () => {
+  const res = await withFakeMaps({ limitedView: true }, async (ctx) =>
+    scrapePlaceReviews(await ctx.newPage(), { url: PLACE_URL, maxReviews: 15, overrides: { ...FAST, headless: true } }));
+  assert.equal(res.termination.reason, 'limited-view');
+  assert.match(res.termination.detail, /headless=true/);
+});

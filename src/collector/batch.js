@@ -60,7 +60,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
     fs.mkdirSync(profileDir, { recursive: true });
     const initialFp = pickFingerprint();
     sharedContext = await chromium.launchPersistentContext(profileDir, {
-      headless: config.headless !== false,
+      headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
       channel,
       proxy,
       viewport: initialFp.viewport,
@@ -77,7 +77,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
     });
   } else {
     browser = await chromium.launch({
-      headless: config.headless !== false,
+      headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
       channel,
       proxy,
       args: commonArgs,
@@ -125,6 +125,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
               maxReviews: config.limit,
               language: { hl: config.language?.split('-')[0] ?? 'en', gl: 'us' },
               overrides: {
+                headless: config.headless === true,
                 incremental: config.incremental,
                 isPlaceCollected: config.isPlaceCollected,
               },

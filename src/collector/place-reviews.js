@@ -228,7 +228,14 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
       ?? /(0x[0-9a-f]+:0x[0-9a-f]+)/i.exec(finalUrl)?.[1]
       ?? null;
 
-    if (!place.placeId) {
+    // F21: Google's "limited view" (seen headless, and signed-out) hides the Reviews tab.
+    // Detect it up front and label it, instead of reporting structure-unknown.
+    if (await isLimitedViewWithoutReviews(page)) {
+      termination = {
+        reason: 'limited-view',
+        detail: `Google Maps served a limited view with no Reviews tab (headless=${cfg.headless === true}). Run headed with a signed-in profile.`,
+      };
+    } else if (!place.placeId) {
       termination = {
         reason: 'missing-place-id',
         detail: `unable to resolve stable place ID from URL: ${finalUrl}`,
@@ -245,7 +252,7 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
         const opened = await ensureFeed(page);
         if (!opened && !panelAppeared) { /* classification below */ }
       } else if (!panelAppeared && (await page.locator(S.container).count()) === 0) {
-        const body = clean((await page.locator('body').textContent())?.slice(0, 500));
+        const body = clean((await page.locator('body').innerText().catch(() => ''))?.slice(0, 500));
         termination = {
           reason: /no review/i.test(body ?? '') ? 'no-reviews' : 'structure-unknown',
           detail: body?.slice(0, 160),
@@ -562,6 +569,15 @@ async function ensureFeed(page, { quick = false } = {}) {
     if (await page.waitForSelector(S.container, { timeout: 10_000 }).then(() => true).catch(() => false)) return true;
   } catch { /* fall through */ }
   return await mounted();
+}
+
+/** F21: limited view banner present, no Reviews tab, and no review cards mounted. */
+export async function isLimitedViewWithoutReviews(page) {
+  const text = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+  if (!/You.re seeing a limited view of Google Maps/i.test(text)) return false;
+  const reviewsTab = await page.locator('button[role="tab"]').filter({ hasText: /^\s*Reviews\s*$/i }).count();
+  const cards = await page.locator(S.container).count();
+  return reviewsTab === 0 && cards === 0;
 }
 
 /** F24: recover from a transiently empty feed instead of terminating on one sample. */
