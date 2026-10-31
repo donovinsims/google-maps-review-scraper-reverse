@@ -11,6 +11,7 @@ export function normalizeReview(raw, ctx = {}) {
     rating: rating.rating,
     ratingRaw: rating.ratingRaw,
     reviewText: isStr(raw?.reviewText),
+    textTruncated: boolOrNull(raw?.textTruncated),
     originalLanguage: isStr(raw?.originalLanguage),
     translatedByGoogle: boolOrNull(raw?.translatedByGoogle),
     publishedDateRaw: isStr(raw?.publishedDateRaw),

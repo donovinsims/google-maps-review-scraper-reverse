@@ -26,7 +26,9 @@ function card(i) {
   const id = order === 'newest' ? 'N' + i : 'R' + i;
   return '<div data-review-id="' + id + '" style="height:120px"><div class="d4r55">Person ' + id + '</div>'
     + '<span class="kvMYJc" role="img" aria-label="' + (1 + (i % 5)) + ' stars"></span>'
-    + '<span class="rsqaWe">' + (i + 1) + ' days ago</span><div class="MyEned"><span class="wiI7pd">Text ' + id + '</span></div></div>';
+    + '<span class="rsqaWe">' + (i + 1) + ' days ago</span><div class="MyEned"><span class="wiI7pd">'
+    + (O.truncate ? 'Short ' + id + ' \u2026</span><button class="w8nwRe" aria-label="See more" aria-expanded="false" data-full="Full text of ' + id + '">More</button>' : 'Text ' + id + '</span>')
+    + '</div></div>';
 }
 function render(n) { shown = Math.min(n, O.cards ? O.cards.length : O.total); let h = ''; for (let i = 0; i < shown; i++) h += card(i); feed.innerHTML = h; }
 if (feed) {
@@ -39,6 +41,13 @@ if (feed) {
     setTimeout(() => { render(shown + O.batch); loading = false; }, O.gapMs || 200);
   });
 }
+// Like Google: clicking "See more" expands the text and removes the button.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('button.w8nwRe');
+  if (!b || O.brokenExpand) return;
+  b.previousElementSibling.textContent = b.getAttribute('data-full');
+  b.remove();
+});
 const sb = document.getElementById('sortbtn');
 if (sb) {
   sb.onclick = () => { document.getElementById('menu').style.display = 'block'; };

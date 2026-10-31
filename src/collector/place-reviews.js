@@ -100,7 +100,14 @@ export function extractInPage(card) {
   const profBtn = q('button[data-href*="contrib/"]');
   const profLink = q('a[href*="contrib/"]');
 
+  // F23: flag text that is still collapsed (expand control present or trailing ellipsis).
+  const reviewTextEl = [...card.querySelectorAll('.wiI7pd')].find((el) => !(el.closest && el.closest('.CDe7pd'))) ?? null;
+  const collapsedBtn = card.querySelector('button[aria-label="See more" i][aria-expanded="false"]');
+  const rt = textOf(reviewTextEl);
+  const textTruncated = rt == null ? null : (!!collapsedBtn || /(\u2026|\.\.\.)$/.test(rt));
+
   return {
+    textTruncated,
     reviewId: card.getAttribute('data-review-id'),
     originalLanguage: card.getAttribute('data-review-language'),
     reviewerName: textOf(q('.d4r55')),
@@ -318,11 +325,13 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
     }
 
     // Expand truncated review bodies ("See more") before reading text.
-    const mores = page.locator(S.moreText);
-    const nExpand = Math.min(await mores.count(), cfg.expandBatch);
-    for (let i = 0; i < nExpand; i++) {
-      try { await mores.nth(i).click({ timeout: 1500 }); diag.expandClicks++; await sleep(60); }
+    // F23: Google removes each "See more" button after it is clicked, so indexing with
+    // nth(i) skipped every other button. Take stable element handles up front instead.
+    const moreHandles = (await page.locator(S.moreText).elementHandles().catch(() => [])).slice(0, cfg.expandBatch);
+    for (const h of moreHandles) {
+      try { await h.click({ timeout: 1500 }); diag.expandClicks++; await sleep(60); }
       catch { diag.staleElements++; }
+      finally { await h.dispose().catch(() => {}); }
     }
 
     let fresh = 0;
@@ -618,6 +627,7 @@ function finalizeRecord(raw, cfg, place) {
     rating: raw.rating ?? null,
     ratingRaw: raw.ratingRaw ?? null,
     reviewText: raw.reviewText ?? null,
+    textTruncated: raw.textTruncated ?? null,
     originalLanguage: raw.originalLanguage ?? null,
     translatedByGoogle: raw.translatedByGoogle ?? null,
     publishedDateRaw: raw.publishedDateRaw ?? null,

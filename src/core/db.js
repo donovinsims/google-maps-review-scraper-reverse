@@ -77,5 +77,8 @@ export function openDb(dbPath = 'data/gmaps-reviews.db') {
       config      TEXT
     );
   `);
+  // Additive migrations (guarded): new columns for existing databases.
+  const cols = new Set(db.prepare('PRAGMA table_info(reviews)').all().map((c) => c.name));
+  if (!cols.has('textTruncated')) db.exec('ALTER TABLE reviews ADD COLUMN textTruncated INTEGER');
   return db;
 }

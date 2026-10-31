@@ -31,8 +31,8 @@ export function createStore(dbPath) {
         reviewText, originalLanguage, translatedByGoogle,
         publishedDateRaw, publishedDateParsed, datePrecision,
         ownerResponse, ownerResponseDateRaw, ownerResponseDateParsed, ownerResponseDatePrecision,
-        reviewUrl, firstCollectedAt, lastCollectedAt, collectedCount, runId)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        reviewUrl, firstCollectedAt, lastCollectedAt, collectedCount, runId, textTruncated)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(placeId, reviewId) DO UPDATE SET
         reviewerName = COALESCE(excluded.reviewerName, reviewerName),
         reviewerProfileUrl = COALESCE(excluded.reviewerProfileUrl, reviewerProfileUrl),
@@ -50,14 +50,17 @@ export function createStore(dbPath) {
         reviewUrl = COALESCE(excluded.reviewUrl, reviewUrl),
         lastCollectedAt = excluded.lastCollectedAt,
         collectedCount = collectedCount + 1,
-        runId = excluded.runId`).run(
+        runId = excluded.runId,
+        textTruncated = CASE WHEN textTruncated IS NULL THEN excluded.textTruncated
+                             WHEN excluded.textTruncated IS NULL THEN textTruncated
+                             ELSE MIN(textTruncated, excluded.textTruncated) END`).run(
           rec.reviewId, rec.placeId, rec.reviewerName ?? null, rec.reviewerProfileUrl ?? null,
           rec.rating ?? null, rec.ratingRaw ?? null, rec.reviewText ?? null,
           rec.originalLanguage ?? null, rec.translatedByGoogle ?? null,
           json(rec.publishedDateRaw) ?? null, json(rec.publishedDateParsed) ?? null, json(rec.datePrecision) ?? null,
           rec.ownerResponse ?? null, rec.ownerResponseDateRaw ?? null,
           json(rec.ownerResponseDateParsed) ?? null, json(rec.ownerResponseDatePrecision) ?? null,
-          rec.reviewUrl ?? null, now, now, rec.collectedCount ?? 1, runId ?? null);
+          rec.reviewUrl ?? null, now, now, rec.collectedCount ?? 1, runId ?? null, rec.textTruncated ?? null);
     return true;
   }
 
