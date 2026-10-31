@@ -257,11 +257,29 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
     // for the signed-in full view Google rewrites the URL segment.
     if (termination.reason === 'not-terminated' && input.sortMode && input.sortMode !== 'default') {
       const sb = page.locator(S.sortButton).first();
-      try { await sb.click({ timeout: 10_000 }); await sleep(500); } catch { onProgress('sort-failed', { mode: input.sortMode }); }
-      const opt = page.locator('[role="menuitemradio"]').filter({ hasText: sortPattern(input.sortMode) }).first();
-      await opt.click({ timeout: 10_000 }).catch(() => onProgress('sort-missing', { mode: input.sortMode }));
-      await sleep(1200);
-      if (await signinHit()) termination = { reason: 'sign-in-required', detail: 'sort view redirected to Google sign-in' };
+      const firstIdBefore = await page.locator(S.container).first().getAttribute('data-review-id', { timeout: 2000 }).catch(() => null);
+      let sortOk = false;
+      try {
+        await sb.click({ timeout: 10_000 });
+        await sleep(500);
+        const opt = page.locator('[role="menuitemradio"]').filter({ hasText: sortPattern(input.sortMode) }).first();
+        await opt.click({ timeout: 10_000 });
+        sortOk = true;
+      } catch {
+        onProgress('sort-missing', { mode: input.sortMode });
+      }
+      if (!sortOk) {
+        termination = { reason: 'sort-unavailable', detail: `could not apply sort "${input.sortMode}" (button or menu option not found)` };
+      } else {
+        // F24: wait for the feed to re-render in the new order (first card changes or cards reappear).
+        const rerendered = await page.waitForFunction((before) => {
+          const c = document.querySelector('div[data-review-id]');
+          return !!c && c.getAttribute('data-review-id') !== before;
+        }, firstIdBefore, { timeout: cfg.sortRenderMs ?? 15_000 }).then(() => true).catch(() => false);
+        if (!rerendered) onProgress('sort-rerender-timeout', { mode: input.sortMode });
+        await sleep(cfg.afterClickMs);
+      }
+      if (termination.reason === 'not-terminated' && await signinHit()) termination = { reason: 'sign-in-required', detail: 'sort view redirected to Google sign-in' };
     }
   }
 
