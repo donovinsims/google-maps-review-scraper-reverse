@@ -77,7 +77,7 @@ export function matchReview(r) {
 
 export function strength(status, matches, businessSignals) {
   if (status !== 'complete') return 'incomplete';
-  if (matches.some((m) => m.kind === 'explicit')) return 'strong';
+  if (matches.some((m) => m.kind === 'explicit' && (m.rating == null || m.rating <= 3))) return 'strong';
   if (matches.length || businessSignals.length) return 'weak';
   return 'none-found';
 }
