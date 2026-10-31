@@ -353,6 +353,8 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
         collected.push(rec);
         batchRecs.push(rec);
         fresh++;
+        // F26: never stream more than the requested limit to the store.
+        if (input.maxReviews && collected.length >= input.maxReviews) break;
       } catch (err) {
         diag.staleElements++;
         if (diag.pageErrors.length < cfg.maxDiagErrors) diag.pageErrors.push(String(err).slice(0, 300));
