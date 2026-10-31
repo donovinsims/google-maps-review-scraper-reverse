@@ -13,6 +13,9 @@ export async function collectForPlaces(config) {
   let listingUrls = config.listingUrls ?? [];
   let jobId = config.jobId ?? `job-${Date.now()}`;
 
+  // F4: jobs left 'running' by a process that no longer exists are marked interrupted.
+  db.markStaleJobs?.();
+
   // Genuine resume support: load existing job checkpoints
   if (config.resume) {
     const existingJob = db.getJob(config.resume);
@@ -33,7 +36,7 @@ export async function collectForPlaces(config) {
   } else {
     db.createJob({
       id: jobId,
-      config,
+      config: { ...config, collector: undefined, pid: process.pid },
       totalPlaces: listingUrls.length,
       notes: `Collecting ${listingUrls.length} place(s)`,
     });
@@ -51,16 +54,15 @@ export async function collectForPlaces(config) {
     isPlaceCollected: (placeId) => db.isPlaceCollected(placeId, 7),
   };
 
-  // Graceful shutdown on SIGINT/SIGTERM — save progress, update job status
-  let shuttingDown = false;
+  // F4: graceful shutdown. First signal asks workers to stop after the current batch,
+  // records interrupted items, and lets the browser close; a second signal forces exit.
+  const abort = { aborted: false, signal: null };
+  batchConfig.abort = abort;
   const onSignal = (signal) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\nGraceful shutdown (${signal}): saving progress...`);
-    try {
-      db.updateJobStatus(jobId, 'interrupted', `Process interrupted by ${signal}`);
-    } catch {}
-    process.exit(130);
+    if (abort.aborted) { console.log(`\nForced exit (${signal}).`); process.exit(130); }
+    abort.aborted = true; abort.signal = signal;
+    console.log(`\nGraceful shutdown (${signal}): finishing current batch, saving progress...`);
+    try { db.updateJobStatus(jobId, 'interrupted', `Process interrupted by ${signal}`); } catch {}
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
@@ -152,7 +154,10 @@ export async function collectForPlaces(config) {
     const allSkipped = summary.length > 0 && summary.every((s) => s.status === 'skipped');
 
     let finalJobStatus = 'completed';
-    if (hasFailed) {
+    if (abort.aborted) {
+      finalJobStatus = 'interrupted';
+      process.exitCode = 130;
+    } else if (hasFailed) {
       finalJobStatus = 'failed';
       process.exitCode = 1;
     } else if (hasBlocked) {
@@ -175,12 +180,13 @@ export async function collectForPlaces(config) {
       blocked: summary.filter((s) => s.status === 'blocked').length,
       failed: summary.filter((s) => s.status === 'failed').length,
       skipped: summary.filter((s) => s.status === 'skipped').length,
+      interrupted: summary.filter((s) => s.status === 'interrupted').length,
     };
 
     db.updateJobStatus(
       jobId,
       finalJobStatus,
-      `Finished: ${counts.done} done, ${counts.partial} partial, ${counts.blocked} blocked, ${counts.failed} failed, ${counts.skipped} skipped`
+      `Finished: ${counts.done} done, ${counts.partial} partial, ${counts.blocked} blocked, ${counts.failed} failed, ${counts.skipped} skipped, ${counts.interrupted} interrupted`
     );
 
     const outDir = path.join(PROJECT_ROOT, 'data', 'out');

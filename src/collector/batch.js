@@ -89,6 +89,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
 
   async function workOne() {
     while (queue.length) {
+      if (config.abort?.aborted) break; // F4: stop taking new places after a shutdown signal
       const entry = queue.shift();
       // F3: entries may carry their original index (resume); plain strings use queue order.
       const listingUrl = typeof entry === 'string' ? entry : entry.url;
@@ -129,6 +130,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
               language: { hl: config.language?.split('-')[0] ?? 'en', gl: 'us' },
               overrides: {
                 headless: config.headless === true,
+                shouldAbort: () => config.abort?.aborted === true,
                 incremental: config.incremental,
                 isPlaceCollected: config.isPlaceCollected,
               },

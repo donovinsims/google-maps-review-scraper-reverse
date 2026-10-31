@@ -155,8 +155,23 @@ export function createStore(dbPath) {
     return ageMs < maxAgeDays * 86_400_000;
   }
 
+  /** F4: mark 'running' jobs whose recorded pid is gone (or unknown) as interrupted. */
+  function markStaleJobs() {
+    const rows = db.prepare("SELECT id, config FROM jobs WHERE status = 'running'").all();
+    let n = 0;
+    for (const r of rows) {
+      let pid = null;
+      try { pid = JSON.parse(r.config ?? '{}').pid ?? null; } catch {}
+      let alive = false;
+      if (pid && pid !== process.pid) { try { process.kill(pid, 0); alive = true; } catch {} }
+      if (pid === process.pid) alive = true;
+      if (!alive) { updateJobStatus(r.id, 'interrupted', 'Marked interrupted: owning process no longer running'); n++; }
+    }
+    return n;
+  }
+
   return {
-    database: db,
+    database: db, markStaleJobs,
     upsertBusinessMeta, upsertReview, upsertReviews, countReviews, selectReviews, selectPlaces,
     deleteReviews, retentionVacuum,
     createJob, updateJobStatus, recordJobItem, getJob, selectRecentJobs, isPlaceCollected,

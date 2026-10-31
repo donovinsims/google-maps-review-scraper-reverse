@@ -295,6 +295,10 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
   let surfaceStalls = 0;
   let loadRetries = 0;
   while (termination.reason === 'not-terminated' && Date.now() < deadline) {
+    if (cfg.shouldAbort?.()) {
+      termination = { reason: 'interrupted', detail: 'shutdown signal received; collected data so far is persisted' };
+      break;
+    }
     if (await signinHit()) {
       termination = {
         reason: 'sign-in-required',
