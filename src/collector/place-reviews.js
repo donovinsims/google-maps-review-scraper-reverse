@@ -242,6 +242,9 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
         reason: 'limited-view',
         detail: `Google Maps served a limited view with no Reviews tab (headless=${cfg.headless === true}). Run headed with a signed-in profile.`,
       };
+    } else if (placeMismatch(place.name, finalUrl)) {
+      // F22: the page must show the business we asked for before anything is stored.
+      termination = { reason: 'place-mismatch', detail: placeMismatch(place.name, finalUrl) };
     } else if (!place.placeId) {
       termination = {
         reason: 'missing-place-id',
@@ -527,6 +530,21 @@ function sortPattern(mode) {
 
 function safeDecode(u) {
   try { return decodeURIComponent(u); } catch { return u; }
+}
+
+const nameTokens = (t) => new Set(String(t ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2));
+
+/** F22: null when the heading matches the URL's place slug, else a reason string. */
+export function placeMismatch(name, url) {
+  if (!name) return 'no business name heading found on the page';
+  const slug = (/\/maps\/place\/([^/@?]+)/.exec(safeDecode(url))?.[1] ?? '').replace(/\+/g, ' ');
+  if (!slug) return null;
+  const want = nameTokens(slug);
+  if (!want.size) return null;
+  const got = nameTokens(name);
+  for (const w of want) if (got.has(w)) return null;
+  return `page heading "${name}" does not match requested place "${slug}"`;
 }
 
 /** Business name: prefer an h1 matching the URL slug; skip Results/Sponsored h1s. */
