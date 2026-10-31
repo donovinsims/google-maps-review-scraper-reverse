@@ -118,11 +118,14 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
         ownContext = true;
       }
 
-      const page = await context.newPage();
+      // F5: each retry attempt gets a fresh page so no DOM or scroll state carries over.
+      let page = null;
       try {
         console.log(`[${n}/${urls.length}] ${listingUrl}`);
         const result = await withRetry(
           async () => {
+            if (page) await page.close().catch(() => {});
+            page = await context.newPage();
             return await scrapePlaceReviews(page, {
               url: listingUrl,
               sortMode: config.sort === 'default' ? undefined : config.sort,
@@ -163,7 +166,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
         await onComplete({ place: null, reviews: [], termination: { reason: 'failed', detail: String(err?.message ?? err) } }, listingUrl, itemIdx).catch(() => {});
         summary.push(failedItem);
       } finally {
-        await page.close().catch(() => {});
+        if (page) await page.close().catch(() => {});
         if (ownContext) {
           await context.close().catch(() => {});
         }

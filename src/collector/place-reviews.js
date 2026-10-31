@@ -179,10 +179,9 @@ export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
 
   const norm = normalizePlaceUrl(input.url, cfg);
   const gotoUrl = norm.canonical ?? norm.searchUrl ?? norm.shortLink;
-  const alreadyHere = /maps\/place|maps\/search/.test(page.url());
-  if (!alreadyHere) {
-    await page.goto(gotoUrl, { waitUntil: 'domcontentloaded', timeout: cfg.networkTimeoutMs });
-  }
+  // F5: always navigate. Skipping when the page was already on some Maps URL made a
+  // retry (or a reused page) scrape whatever place and scroll state was left over.
+  await page.goto(gotoUrl, { waitUntil: 'domcontentloaded', timeout: cfg.networkTimeoutMs });
 
   if (norm.searchUrl) {
     // Wait for the results list to actually render before clicking through.
