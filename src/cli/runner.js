@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { PROJECT_ROOT } from './index.js';
 import { createStore } from '../core/store.js';
 import { normalizeReview } from '../core/normalize.js';
+import { classifyItem } from '../core/status.js';
 
 export async function collectForPlaces(config) {
   const db = createStore(config.db ?? path.join(PROJECT_ROOT, 'data', 'gmaps-reviews.db'));
@@ -110,20 +111,10 @@ export async function collectForPlaces(config) {
           db.upsertReviews(normalized, jobId);
         }
 
-        const reason = result.termination?.reason;
-        let itemStatus = 'done';
-        if (reason === 'skipped-incremental') {
-          itemStatus = 'skipped';
-        } else if (['limit-reached', 'no-more-reviews'].includes(reason)) {
-          itemStatus = 'done';
-        } else if (['blocked', 'captcha', 'sign-in-wall'].includes(reason)) {
-          itemStatus = 'blocked';
-        } else if (['failed', 'missing-place-id', 'search-mismatch', 'structure-unknown'].includes(reason) || result.error) {
-          itemStatus = 'failed';
-        } else if (['anonymous-preview-limit', 'timeout', 'pagination-stall', 'sign-in-required'].includes(reason)) {
-          itemStatus = 'partial';
-        } else {
-          itemStatus = result.reviews?.length ? 'partial' : 'failed';
+        const itemStatus = classifyItem(result);
+        if (result.termination) {
+          result.termination.expectedCount = result.place?.reviewsCount ?? null;
+          result.termination.collectedCount = result.reviews?.length ?? 0;
         }
 
         db.recordJobItem({
