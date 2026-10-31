@@ -1,0 +1,65 @@
+{
+ "source": "pilot+fresh hand labels, /workspace/audit/fresh/labels.json",
+ "falsePositives": [
+  {
+   "text": "I called Eldgridge Roofing, Loves Park, IL when I was faced with overwhelming storm damange on my home in July 2024. My first call was answered from the field by a real person, no voice mail. He referred me to a project manager, Joe, who called me within 15 mnutes. Joe was at my house within 30 minutes of that call. He is professional, polite, knowledgeable, and confident. He walked me through the process of replacing the roof . As the project progressed and there were other damage issues, he said Eldridge had access to exceptional subcontractors . They were outstanding and did amazing work. Joe told me what to expect and when. He followed up immediately with every question I had along the way. He also answered his phone every time on my first call . Thanks to Eldridge Roofing and its team, of professionals, my house is beautiful again.",
+   "topic": "phone_not_answered"
+  },
+  {
+   "text": "Didn’t have a service done by this company, but the driver is reckless. Saw the website on their company truck/ trailer. Almost hit me and swerved in front of me multiple times. I’m pregnant and this almost caused a huge accident on n main in Roscoe. Do better. Definitely deterred me from ever wanting a service done by them. Horrible advertising.",
+   "topic": "website"
+  },
+  {
+   "text": "I had an excellent experience at Xperts Auto Care. From the very first moment, they treated me with professionalism, honesty, and extensive knowledge. They clearly explained what was wrong with my vehicle and didn't try to sell me unnecessary parts, something that's hard to find these days. The work was quick, the prices fair, and my car is running better than before. It's clear they genuinely care about their customers and doing quality work. If you're looking for a mechanic you can trust, Xperts Auto Care is the place to go. Highly recommended!",
+   "topic": "hard_to_find"
+  },
+  {
+   "text": "Rico is a busy man. And does his best to rectify any situation that doesn’t meet up to his business standards. I believe Rico used to be acquainted with the family that used to do an excellent job washing cars(15-20yrs ago)behind the mobile gas station off of Forest Hills. Which is why I came to his place of business once I saw it was open for business. I was at work when I received his voicemail about a situation with my vehicle and appreciate his transparency to figure things out. He’s the kind of person you can and should talk to before coming to give a below standard review. He fixed my oxygen sensor twice & is professionally fair. The staff is knowledgeable and dedicated to diagnosing any vehicle. Even a lemon vehicle such as mine.",
+   "topic": "phone_not_answered"
+  },
+  {
+   "text": "I had my Tesla Model Y serviced here to replace a lateral link and lower control arm, and the experience was excellent from start to finish. Both Gator and Dallas were fantastic ,very knowledgeable, honest, and patient with all my questions. Their consultation was clear, pricing was fair, and the communication throughout the repair was great. The work was done professionally and my car drives perfectly now. It’s hard to find a shop for EV suspension work, but these guys really delivered. Highly recommend Hometown Auto for anyone looking for solid service and great customer care! Thank God now I have a shop I can trust.",
+   "topic": "hard_to_find"
+  },
+  {
+   "text": "It is so hard to find a really good mechanic. Someone that explains what the problem is. Ray would go through what will be done with a decent price. Jim is a reliable car mechanic. I first came in with coolant leaking. He fixed that. Then my front-end was making noise so he replced the double fan. It's riding much better! I don't usally write reviews but I did because Ray and Jim are worth it. I finally found a good car repair company :)",
+   "topic": "hard_to_find"
+  },
+  {
+   "text": "These guys always fit us in and are honest on what needs to be done and what can wait a little bit! It is so hard to find a mechanic you can trust (so we have learned). They truly are a Dr. for cars. Once you find a good mechanic/Dr. you stick with them because you trust them. It is worth the 35 minute drive for us to make vs the place that is 5 minutes away because of their wonderful and trustworthy service!",
+   "topic": "hard_to_find"
+  },
+  {
+   "text": "I had a terrible experience with this cleaning service. I paid for the most expensive package, as I was pregnant at the time, and had difficulty completing the work myself. I had to clean, after they stated they were finished, which was very difficult. The organization asks you up front about the property size so it was no surprise to them what they were taking on. They complained that they had to call in more staff to complete the job. The home had no furniture or anything in it to work around. I have picture proof of the relatively fair condition of the home before hire of the service. I do not understand what was so taxing for them, and a good customer service manager would never place the blame on the customer. They could have tripled their business with me but instead they are getting this honest review. Too bad Annabel’s. I wanted to like your organization. I would give them zero stars if that was an option.",
+   "topic": "had_to_call"
+  },
+  {
+   "text": "Great service and very friendly! My son had a car accident and they were right there to tow his car. Very respectful of the car even though it was not drivable. Went to retrieve the contents of his car and one of the gentleman even told us if we didn't show up today, he was going to store our personal belongings inside their building. Now that's customer service!! Thank you!!",
+   "topic": "booking"
+  },
+  {
+   "text": "After waiting 2 hours for a AAA driver that never showed, I called Dewey's and they came within 20 minutes. The drivers were very professional.",
+   "topic": "booking"
+  },
+  {
+   "text": "Matthew showed up help me get a key Truly kind gentleman Didn’t have exact rate they worked me Best locksmith service around they care about there customers Especially with me being in Watertown hard to find somebody to help God bless there business",
+   "topic": "hard_to_find"
+  },
+  {
+   "text": "Olmeca exceeded expectations. I had a residential dream patio idea that I sketched up myself. I went to several contractors, many of them were only interested in doing basic flat work. Some of them seemed interested but then didn't call back. Some of them would have had to outsource so much of the work that it would have been too expensive for me. Jorge came and turned out to be the perfect person for the job. He showed immense enthusiasm for my creative idea. He had the tools and the experience necessary to do everything securely, beautifully, and within spec. Omega has extensive experience with foundation work, so you don't have to worry about shoddy jobs that fall apart later. His crew blew me away when they came to do the job. A job I thought I was going to take a month they got done in about a week and a half. I couldn't believe it. At one point they found a broken septic line and even replaced it for me for pennies on the dollar since it was already there. I owe them so much gratitude for that. There were some issues with the sealant finish and he even came back after the job was over to fix the problem free of charge. You're not going to find a better contractor for your stamped concrete job who is more skilled and dependable than Jorge and the crew of Olmeca concrete.",
+   "topic": "phone_not_answered"
+  }
+ ],
+ "missed": [
+  "I had Eldridge roofing do a repair and when I had a small leak where they patched they never even looked at it then ghosted me not returning any calls. I do have a receipt and showed it to the receptionist after going into there store. its sad that some companies can get away with this. I believe its court time.",
+  "Didn't return phone call after I left message to call me foe a quote for roofing.",
+  "Called for an estimate and spoke with someone who told me I would be contacted about setting up a day and time, didn't hear anything back from them. Great way to run a business.",
+  "Terrible, Terrible, Terrible. They never finished the job that was promised. Calls were ignored excuses were given. I will never do business with them again. I give them a negative 5.",
+  "I guess they don’t want new customers? I’ve called multiple times, emailed, and submitted an online quote and no response to anything.",
+  "We contacted Nason's several times and left a message that we were looking to put a retaining wall in our culvert area. We even went to their place of business and gave them our contact information. We never heard from them. Would not recommend them.",
+  "Update your google business page. States you service Rock County, specifically Janesville, it's on the list with a check mark next to it. I called for cleaning and was told this is outside your service area.",
+  "Spoke with Chad on the phone & he said he would email me a quote within 3 days. Never heard back from him even after leaving a message for him. Nice on the phone but, obviously, extremely unprofessional, unreliable, & untrustworthy!",
+  "I give you call when I need you for last time... 5 times and you never give me call back.. so I am sorry",
+  "Called numerous times for a driveway quote. Never received one, just a comment about how it would be expensive because of the driveway being on a hill."
+ ]
+}

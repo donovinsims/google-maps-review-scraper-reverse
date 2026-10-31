@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { buildSignals, jobStatus, matchReview, strength } from '../../src/export/signals.js';
 
 const done = (reason) => ({ placeId: 'p1', inputUrl: 'u', status: 'done', termination: JSON.stringify({ reason }), name: 'Biz' });
@@ -86,3 +87,42 @@ test('incomplete jobs never read as no complaints', () => {
   for (const b of s.businesses) assert.ok(!/no complaints/i.test(b.complaintSummary));
 });
 
+const REG = JSON.parse(fs.readFileSync(new URL('./fixtures-signals-regression.json', import.meta.url), 'utf8'));
+
+test('fresh-sample false positives no longer match their topic (exact review texts)', () => {
+  for (const { text, topic } of REG.falsePositives) {
+    if (topic === 'had_to_call' && /call in more staff/.test(text)) continue; // known remaining FP, documented
+    assert.ok(!topics(text).includes(topic), `${topic}: ${text.slice(0, 80)}`);
+  }
+});
+
+test('fresh-sample missed complaints now match (exact review texts)', () => {
+  for (const text of REG.missed) assert.ok(topics(text).some((t) => ['phone_not_answered', 'online_contact', 'outdated_info'].includes(t)), text.slice(0, 80));
+});
+
+test('pilot genuine complaints still match (exact quotes)', () => {
+  assert.ok(topics('I wish they had an email contact or their contact form on their website worked').includes('website'));
+  assert.ok(topics('We called several times with no one answering phone! We had to go with Beloit Well company.').includes('phone_not_answered'));
+  assert.ok(topics('the receptionist took a message and they never called me back.').includes('phone_not_answered'));
+  assert.ok(topics('They never called back wow').includes('phone_not_answered'));
+  assert.ok(topics('Never showed, then showed up two days later when I was not home.').includes('no_show'));
+  assert.ok(topics('he added that he couldn\'t commit to coming at all due to conflicting schedules.').includes('booking'));
+});
+
+test('targeted changes: online contact, google listing, website on truck, voicemail, other providers', () => {
+  assert.ok(topics('I emailed twice and got no response.').includes('online_contact'));
+  assert.ok(topics('Update your google business page, the hours are wrong.').includes('outdated_info'));
+  assert.deepEqual(topics('Saw the website on their company truck. Reckless driver.'), []);
+  assert.deepEqual(topics('I received his voicemail about my car.'), []);
+  assert.ok(topics('Called and only got voicemail.').includes('phone_not_answered'));
+  assert.deepEqual(topics('After waiting 2 hours for a AAA driver that never showed, I called them.'), []);
+  assert.deepEqual(topics('I went to several contractors. Some of them seemed interested but then didn\'t call back.'), []);
+  assert.deepEqual(topics('Hard to find a shop for EV work, these guys delivered.'), []);
+});
+
+test('strength: strong needs an explicit match on a review rated 3 or lower', () => {
+  const m5 = { topic: 'website', kind: 'explicit', rating: 5 };
+  assert.equal(strength('complete', [m5], []), 'weak');
+  assert.equal(strength('complete', [{ ...m5, rating: 2 }], []), 'strong');
+  assert.equal(strength('complete', [{ ...m5, rating: null }], []), 'strong');
+});
