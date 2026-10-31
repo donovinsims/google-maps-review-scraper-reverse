@@ -14,3 +14,12 @@ data/poc/*.png
 data/profiles/
 data/export/
 
+
+# F12: browser profiles and session files must never be committed
+**/profiles/
+Cookies
+Cookies-journal
+Login Data*
+Web Data*
+*.sqlite
+*.sqlite-journal

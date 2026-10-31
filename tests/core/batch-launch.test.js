@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchBatchCollector } from '../../src/collector/batch.js';
@@ -46,14 +47,16 @@ test('batch: headless only when explicitly requested', async () => {
 
 test('batch: named profile uses a persistent context with signal handling off', async () => {
   const f = fakePw(); const name = 'mock-test-profile';
+  const prevEnv = process.env.GMR_PROFILE_DIR;
+  process.env.GMR_PROFILE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gmr-prof-'));
   try {
     await quiet(() => launchBatchCollector(['u0'], { profile: name, deps: { chromium: f.chromium, scrape: async () => ok() } }, async () => ({})));
     assert.equal(f.log.persistent.length, 1);
-    assert.equal(f.log.persistent[0].dir, path.join(ROOT, 'data', 'profiles', name));
+    assert.equal(f.log.persistent[0].dir, path.join(process.env.GMR_PROFILE_DIR, name));
     assert.equal(f.log.persistent[0].o.headless, false);
     assert.equal(f.log.persistent[0].o.handleSIGINT, false);
     assert.equal(f.log.launch.length, 0);
-  } finally { fs.rmSync(path.join(ROOT, 'data', 'profiles', name), { recursive: true, force: true }); }
+  } finally { fs.rmSync(process.env.GMR_PROFILE_DIR, { recursive: true, force: true }); if (prevEnv === undefined) delete process.env.GMR_PROFILE_DIR; else process.env.GMR_PROFILE_DIR = prevEnv; }
 });
 
 test('batch: a retry gets a fresh page and the old page is closed (F5)', async () => {

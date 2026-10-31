@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { chromium } from 'rebrowser-playwright';
 import { scrapePlaceReviews, consentCookies } from './place-reviews.js';
-import { getProfileDir, hasSavedProfile, hasSystemChrome, parseProxy } from './browser.js';
+import { getProfileDir, hasSavedProfile, hasSystemChrome, parseProxy, ensureProfileDir } from './browser.js';
 import { pickFingerprint, webglOverrideScript } from './stealth.js';
 import { withRetry } from '../core/retry.js';
 
@@ -83,8 +83,8 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
   let sharedContext = null;
 
   if (profileDir) {
-    console.log(`Using persistent profile (${channel ?? 'chromium'}): ${path.relative(PROJECT_ROOT, profileDir)}`);
-    fs.mkdirSync(profileDir, { recursive: true });
+    console.log(`Using persistent profile (${channel ?? 'chromium'}): ${profileDir}`);
+    ensureProfileDir(profileDir);
     const initialFp = pickFingerprint();
     sharedContext = await pw.launchPersistentContext(profileDir, {
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
