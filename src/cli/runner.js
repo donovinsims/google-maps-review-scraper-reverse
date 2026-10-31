@@ -1,7 +1,9 @@
 // Runner: iterates place URLs, tracks job state in SQLite, launches batch collector.
 import path from 'node:path';
 import fs from 'node:fs';
-import { PROJECT_ROOT } from './index.js';
+import { fileURLToPath } from 'node:url';
+// Computed locally (importing index.js would run the CLI parser as a side effect).
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 import { createStore } from '../core/store.js';
 import { normalizeReview } from '../core/normalize.js';
 import { classifyItem } from '../core/status.js';
@@ -24,7 +26,8 @@ export async function collectForPlaces(config) {
         .map((item) => item.inputUrl)
     );
     const originalUrls = existingJob.config?.listingUrls ?? listingUrls;
-    listingUrls = originalUrls.filter((u) => !completedUrls.has(u));
+    // F3: keep each URL's original index so resumed items update their own job_items row.
+    listingUrls = originalUrls.map((url, idx) => ({ url, idx })).filter((e) => !completedUrls.has(e.url));
     console.log(`Resuming job ${jobId}: ${completedUrls.size} completed, ${listingUrls.length} pending.`);
     db.updateJobStatus(jobId, 'running', `Resuming job: ${listingUrls.length} remaining places`);
   } else {
@@ -63,7 +66,7 @@ export async function collectForPlaces(config) {
   process.on('SIGTERM', onSignal);
 
   try {
-    const { launchBatchCollector } = await import('../collector/batch.js');
+    const launchBatchCollector = config.collector ?? (await import('../collector/batch.js')).launchBatchCollector;
 
     // Streaming batch callback: persist to SQLite immediately as cards load
     const onBatch = async (data, listingUrl) => {

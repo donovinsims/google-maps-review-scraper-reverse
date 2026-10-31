@@ -89,8 +89,11 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
 
   async function workOne() {
     while (queue.length) {
-      const listingUrl = queue.shift();
+      const entry = queue.shift();
+      // F3: entries may carry their original index (resume); plain strings use queue order.
+      const listingUrl = typeof entry === 'string' ? entry : entry.url;
       const n = ++i;
+      const itemIdx = typeof entry === 'string' ? n - 1 : entry.idx;
       const started = Date.now();
       const fp = pickFingerprint();
 
@@ -131,7 +134,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
               },
             }, (event, data) => {
               if (event === 'stream-batch' && onBatch) {
-                onBatch(data, listingUrl, n - 1).catch(() => {});
+                onBatch(data, listingUrl, itemIdx).catch(() => {});
               }
             });
           },
@@ -149,13 +152,13 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
             },
           }
         );
-        const done = await onComplete(result, listingUrl, n - 1);
+        const done = await onComplete(result, listingUrl, itemIdx);
         summary.push({ ...done, durationMs: Date.now() - started });
         console.log(`  collected=${done.collected} termination=${result.termination.reason}`);
       } catch (err) {
         console.error(`  FAILED: ${err?.message ?? err}`);
         const failedItem = { listingUrl, error: String(err?.message ?? err), durationMs: Date.now() - started };
-        await onComplete({ place: null, reviews: [], termination: { reason: 'failed', detail: String(err?.message ?? err) } }, listingUrl, n - 1).catch(() => {});
+        await onComplete({ place: null, reviews: [], termination: { reason: 'failed', detail: String(err?.message ?? err) } }, listingUrl, itemIdx).catch(() => {});
         summary.push(failedItem);
       } finally {
         await page.close().catch(() => {});
