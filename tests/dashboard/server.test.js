@@ -1,0 +1,23 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { once } from 'node:events';
+import http from 'node:http';
+import { createStore } from '../../src/core/store.js';
+import { createDashboardServer } from '../../src/dashboard/server.js';
+test('D: dashboard normalizes jobs, paginates in storage, rejects foreign hosts and unknown APIs',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gmr-dashboard-'));const db=path.join(dir,'test.db');const s=createStore(db);
+  s.upsertBusinessMeta({placeId:'p',listingUrl:'url',reviewsCount:510});s.upsertReviews(Array.from({length:510},(_,i)=>({placeId:'p',reviewId:String(i).padStart(3,'0'),rating:5})),'a');
+  s.createJob({id:'j',config:{listingUrls:['url']},totalPlaces:1});s.recordJobItem({jobId:'j',idx:0,inputUrl:'url',placeId:'p',status:'partial',expectedCount:510,collectedCount:5,completeness:5/510});s.updateJobStatus('j','partial','test');s.close();
+  const server=createDashboardServer({dbPath:db,port:0});await once(server,'listening');const base=`http://127.0.0.1:${server.address().port}`;
+  t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
+  let response=await fetch(base+'/api/jobs');const jobs=(await response.json()).jobs;assert.equal(jobs[0].id,'j');assert.equal(jobs[0].counts.partial,1);assert.equal(jobs[0].collected,5);
+  response=await fetch(base+'/api/places/p/reviews?limit=2&offset=3');let data=await response.json();assert.equal(data.reviews.length,2);assert.equal(data.total,510);assert.equal(data.reviews[0].reviewId,'003');
+  data=await (await fetch(base+'/api/places/p/reviews?limit=9999')).json();assert.equal(data.reviews.length,500);
+  assert.equal((await fetch(base+'/api/places/p/reviews?limit=abc')).status,400);
+  response=await fetch(base+'/api/missing');assert.equal(response.status,404);assert.match(response.headers.get('content-type'),/json/);
+  const foreign=await new Promise((resolve,reject)=>{http.get(base+'/api/jobs',{headers:{Host:'evil.example'}},r=>{r.resume();resolve({status:r.statusCode,headers:r.headers});}).on('error',reject);});assert.equal(foreign.status,403);assert.equal(foreign.headers['access-control-allow-origin'],undefined);
+  response=await fetch(base+'/api/export/csv');assert.match(await response.text(),/^\uFEFF?placeId,reviewId/);
+});

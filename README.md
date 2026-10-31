@@ -1,37 +1,26 @@
 # Google Maps Review Scraper (Reverse / Local-First)
 
-Enterprise-grade, local-first Google Maps review extraction tool built for resilience and anti-bot stealth. Comparable in reliability and anti-detection philosophy to [SeleniumBase UC Mode](https://github.com/seleniumbase/seleniumbase), but native to Node.js and Playwright.
+Local-first Google Maps review extraction tool built for data accuracy, honest reporting, and repeatable results. Runs directly on your machine with native Node.js and Playwright.
 
-[![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)](tests)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.0.0-blue)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13.0-blue)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## Highlights
+## Priorities
 
-- **Anti-Bot Resilience**: Uses `rebrowser-playwright` CDP runtime leak patches, WebGL vendor/renderer spoofing (`Intel UHD Graphics 630`), Sec-CH-UA fingerprint randomization, and `navigator.webdriver` scrubbing.
-- **SeleniumBase-Grade Fault Tolerance**: Exponential backoff with full jitter (`withRetry()`), stall recovery with tab re-engagement, and adaptive scroll throttling based on DOM rendering speed.
-- **Authenticated Pagination Support**: Google limits anonymous visitors to ~6 preview reviews before throwing sign-in walls. Run `gmr login` once to store a local persistent profile; all subsequent runs automatically paginate full review histories.
-- **Enterprise SQLite Persistence**: Local WAL-mode SQLite store (`data/gmaps-reviews.db`) with composite key `(placeId, reviewId)` UPSERT deduplication, structured job tracking, and run diagnostics.
-- **Formula-Injection Safe Exports**: CSV and JSON exporters with automated spreadsheet formula neutralizing (`=`, `+`, `-`, `@` escaped).
-- **Graceful Lifecycle Management**: Clean SIGINT/SIGTERM handlers, self-bootstrapping browser checks, and force-kill timeouts to prevent orphaned Chromium processes.
+1. **Accurate data**: Verified selectors, real-DOM parsing, strict star rating validation, clean owner response separation, and uncertainty-bounded date windows that never drift.
+2. **Honest reporting**: Never reports success when a run is blocked, truncated, or incomplete. Specific typed termination reasons and semantic exit codes.
+3. **Repeatable results**: Re-observation intersects date uncertainty windows to narrow time bounds rather than advancing relative dates.
+4. **Clear failure messages**: Actionable diagnostics, automatic masked screenshots, and redacted HTML captures on non-success outcomes.
 
 ---
 
-## Architecture
+## System Requirements
 
-```mermaid
-flowchart TD
-    CLI["CLI (gmr run / login / export)"] --> Runner["Job Runner (SQLite State Tracking)"]
-    Runner --> Batch["Batch Collector (Concurrency & Profiles)"]
-    Batch --> Stealth["Stealth Engine (UA, WebGL, Jitter)"]
-    Batch --> Retry["Retry Engine (Exponential Backoff)"]
-    Batch --> Scraper["place-reviews.js (Adaptive Scroll & Recovery)"]
-    Scraper --> Store["SQLite Store (Idempotent UPSERT)"]
-    Store --> Exporter["Exporters (CSV, JSON)"]
-    Store --> Dashboard["Local Dashboard (:7877)"]
-```
+- **Node.js >= 22.13.0** (required for built-in `node:sqlite` `DatabaseSync`)
+- **Google Chrome** installed locally (falls back to Playwright's bundled Chromium if unavailable)
+- macOS, Linux, or Windows (tested on macOS arm64)
 
 ---
 
@@ -39,132 +28,222 @@ flowchart TD
 
 ### 1. Installation
 
-Requires **Node.js >= 22.0.0** (native `node:sqlite`).
-
 ```bash
 git clone https://github.com/donovinsims/google-maps-review-scraper-reverse.git
 cd google-maps-review-scraper-reverse
 npm install
 ```
 
-### 2. (Recommended) Authenticate for Full Pagination
-
-Google Maps limits anonymous unauthenticated visitors to a small preview batch (~6 reviews). To extract 100+ or 1,000+ reviews from a place:
+Verify your environment with `doctor`:
 
 ```bash
-npx gmr login
+npm run cli -- doctor
 ```
-A Chrome window opens. Sign into any standard Google account. Once signed in, press Enter in the terminal to save your session cookies locally to `data/profiles/default`.
+
+### 2. Authentication (Recommended)
+
+Google restricts unauthenticated access to Google Maps. Anonymous visitors often receive a limited place overview with zero review cards or a small preview batch before hitting sign-in walls.
+
+To extract complete review histories:
+
+```bash
+npm run cli -- login
+```
+
+A visible Chrome window will open. Sign into your Google account. Once signed in, press Enter in the terminal (or close the browser window) to save your session profile to `data/profiles/default`.
+
+Run `doctor` again to confirm signed-in status:
+
+```bash
+npm run cli -- doctor
+```
 
 ### 3. Run a Collection Job
 
-Collect reviews from a single Google Maps URL:
+Collect reviews for a place using its settled URL or feature ID:
+
 ```bash
-npx gmr run "https://www.google.com/maps/place/Tartine+Bakery/@37.761425,-122.424104,17z" --limit 50
+npm run cli -- run "https://www.google.com/maps/place/Tartine+Bakery/data=!4m2!3m1!1s0x808f7e1807365605:0x601f7a97f0ce6c6b" --limit 30
 ```
 
-Collect reviews from a list of URLs in a text file:
+Collect from a list of URLs in a text file (one URL per line):
+
 ```bash
-npx gmr run urls.txt --concurrency 2 --limit 100
+npm run cli -- run urls.txt --concurrency 1 --limit 100
 ```
 
-### 4. Check Status & Export
+Resume an interrupted job:
 
 ```bash
-# View database statistics and recent jobs
-npx gmr status
-
-# Export to CSV (escapes formula injection risks)
-npx gmr export --format csv --out data/export/reviews.csv
-
-# Export to JSON
-npx gmr export --format json --out data/export/reviews.json
+npm run cli -- run --resume <jobId>
 ```
 
-### 5. Launch Web Dashboard
+### 4. Inspect & Export
 
 ```bash
-npx gmr serve --port 7877
-# Open http://localhost:7877 in your browser
+# View database statistics, collected places, and recent jobs
+npm run cli -- status
+
+# Export to CSV (with formula injection defense and UTF-8 BOM)
+npm run cli -- export --format csv --out data/export/reviews.csv
+
+# Export to JSON (schema version 2)
+npm run cli -- export --format json --out data/export/reviews.json
+
+# Delete a place and its reviews
+npm run cli -- delete "0x808f7e1807365605:0x601f7a97f0ce6c6b"
+
+# Vacuum database and clean up older jobs
+npm run cli -- gc --older-than 30
+```
+
+### 5. Web Dashboard
+
+```bash
+npm run cli -- serve --port 7877
+# Open http://localhost:7877
 ```
 
 ---
 
 ## CLI Reference
 
-```
-Usage: gmr [command] [options]
+Run via `npm run cli -- <command> [options]` or link globally with `npm link` and run `gmr <command> [options]`.
 
-Commands:
-  login [options]             Open persistent profile browser to log in to Google Maps
-  run [options] <urls...>     Collect reviews for one or more place URLs or a text file
-  status                      Print database counts, jobs, and diagnostic summary
-  export [options]            Export reviews to CSV or JSON
-  delete <placeId>            Delete a place and all its stored reviews
-  serve [options]             Launch local analytics dashboard
-```
+### Commands
 
-### `gmr run` Options
+| Command | Description |
+|---|---|
+| `login [options]` | Open persistent profile browser to log in to Google Maps |
+| `doctor [options]` | Check Node version, SQLite, DB permissions, browser, and auth state |
+| `run [options] <urls...>` | Collect reviews for one or more place URLs or a text file |
+| `status` | Print database counts, collected places, and recent jobs summary |
+| `export [options]` | Export collected reviews to CSV or JSON |
+| `delete <placeId>` | Delete a place and all its stored reviews (positional ID or `--placeId`) |
+| `gc [options]` | Clean up old jobs and vacuum database (`--older-than <days>`) |
+| `serve [options]` | Launch local dashboard bound strictly to localhost (`--port <port>`) |
+
+### `run` Options
 
 | Option | Default | Description |
 |---|---|---|
-| `--concurrency <n>` | `1` | Max concurrent worker tabs (1 to 4) |
-| `--limit <n>` | `null` | Max reviews to collect per place (unlimited if omitted) |
-| `--sort <mode>` | `default` | Sort order: `default`, `newest`, `highest_rating`, `lowest_rating` |
-| `--headless` | `false` | Run headless (defaults to visible browser for anti-bot resilience) |
-| `--profile <name>` | `default` | Persistent profile name (`false` to run strictly anonymous) |
-| `--proxy <url>` | `null` | Proxy server URL (`http://user:pass@host:port` or `socks5://...`) |
-| `--language <lang>` | `en-US` | Locale language code |
+| `--limit <n>` | `null` | Max reviews to collect per place (positive integer, unlimited if omitted) |
+| `--concurrency <n>` | `1` | Concurrent worker tabs (1 to 4). Persistent profiles default to 1. |
+| `--unsafe-concurrency` | `false` | Allow concurrency > 1 with a persistent profile |
+| `--sort <mode>` | `default` | Sort order: `default`, `newest`, `relevant`, `highest`, `lowest` |
+| `--headless` | `false` | Run headless browser |
+| `--profile <name>` | `default` | Persistent profile name (`--no-profile` or `--profile false` for anonymous) |
+| `--require-login` | `false` | Abort immediately (exit 64) if the profile is not signed in |
+| `--language <lang>` | `en` | UI language / `hl` parameter (`^[a-z]{2}(-[A-Z]{2})?$`) |
+| `--region <reg>` | `us` | Region / `gl` parameter |
+| `--proxy <url>` | `null` | Proxy server URL (`http://user:pass@host:port`). Credentials redacted in storage. |
+| `--incremental` | `false` | Skip places previously completed within the retention window |
+| `--incremental-days <n>` | `7` | Days before an incremental place is eligible for re-collection |
+| `--resume <jobId>` | `null` | Resume unfinished items from an earlier job (preserves original indices) |
+| `--min-completeness <n>` | `0.9` | Ratio of collected to expected reviews required for `completed` status |
+| `--stall-timeout-sec <n>` | `90` | Seconds without new reviews before classifying a stall |
+| `--place-timeout-min <n>` | `60` | Hard ceiling minutes per place |
+| `--delay-ms <min,max>` | `3000,8000` | Random delay between consecutive places in milliseconds |
+| `--db <path>` | `data/gmaps-reviews.db` | SQLite database file path |
 
----
+### Exit Codes
 
-## Review Record Schema
-
-Each collected review normalized in the SQLite store includes:
-
-| Field | Type | Description |
+| Code | Status | Meaning |
 |---|---|---|
-| `reviewId` | string | Unique Google Maps review ID (Primary composite key) |
-| `placeId` | string | Normalized place ID (e.g. `ChIJIQBpAG2ahYAR_6128GcTUEo`) |
-| `reviewerName` | string | Author public name |
-| `reviewerProfileUrl` | string | Link to author Google Maps contribution profile |
-| `rating` | integer | Numeric star rating (1 to 5) |
-| `reviewText` | string | Review text content (or `null` if rating-only) |
-| `publishedDate` | string | Normalized ISO 8601 timestamp (e.g. `2024-03-15T12:00:00Z`) |
-| `publishedDateRaw` | string | Raw text as rendered by Google Maps (e.g. `3 weeks ago`) |
-| `translatedByGoogle` | boolean | True if translated by Google Translate |
-| `ownerResponse` | string | Text response from business owner (or `null`) |
-| `ownerResponseDate` | string | ISO timestamp of owner response |
-| `collectedAt` | string | ISO timestamp when review was collected |
+| `0` | `completed` | All items finished successfully (`done` or `skipped`) |
+| `1` | `failed` | One or more items failed (unrecoverable error, invalid URL, sort failure) |
+| `2` | `partial` | Incomplete yield, anonymous preview limit, timeout, or structure drift |
+| `3` | `blocked` | Circuit breaker tripped by bot wall, CAPTCHA, or consent wall |
+| `64` | `usage` | Invalid CLI options or argument validation failure |
+| `130` | `interrupted` | Aborted cleanly by SIGINT / SIGTERM |
 
 ---
 
-## Reliability & Anti-Detection Architecture
+## Terminations & Item Status
 
-This tool is engineered to resist bot detection and scraping stalls without third-party SaaS dependencies:
+Every processed place produces a structured summary with a typed termination reason:
 
-1. **CDP Leak Neutralization**: Vanilla Playwright triggers Google's CDP detection via `Runtime.enable`. This project relies on `rebrowser-playwright` which patches internal DevTools instrumentation leaks at the binary/protocol level.
-2. **Hardware Fingerprint Emulation**:
-   - WebGL renderer/vendor properties are dynamically spoofed to match standard consumer Intel GPUs (`Intel(R) UHD Graphics 630`).
-   - Canvas context noise and `navigator.webdriver` removal scripts are injected into every context creation.
-3. **Adaptive Scroll Engine**:
-   - Instead of static timers, the scroll loop monitors feed throughput. Fast batches speed up scrolling (`0.6x`), while slowing feeds scale up wait times (`1.5x`).
-   - If a stall is detected (2 passes with 0 new cards), the engine initiates recovery: re-clicking the Reviews tab and re-centering the feed.
-4. **Resilient Failure Lifecycle**:
-   - `withRetry()` wraps URL scraping with exponential backoff and jitter. Transient timeouts and socket resets retry automatically; fatal auth walls fail immediately with actionable diagnostic messages.
-   - Clean signal traps handle `SIGINT` (Ctrl+C), recording partial batch progress into the SQLite database and gracefully closing browser processes.
+| Status | Termination Reasons | Description |
+|---|---|---|
+| `done` | `limit-reached`<br>`no-more-reviews`<br>`no-reviews` | Reached requested limit, exhausted feed with positive end marker, or confirmed zero reviews |
+| `skipped` | `skipped-incremental` | Place was previously completed within `--incremental-days` |
+| `partial` | `incomplete`<br>`anonymous-preview-limit`<br>`pagination-stall`<br>`timeout`<br>`sign-in-required`<br>`structure-drift` | Truncated reviews remain, yield was below `--min-completeness`, hit anonymous access cap, or feed stalled |
+| `blocked` | `blocked`<br>`captcha`<br>`sign-in-wall`<br>`consent-wall` | Access denied or anti-bot challenge presented. 2 consecutive blocks trigger circuit breaker. |
+| `failed` | `missing-place-id`<br>`search-mismatch`<br>`structure-unknown`<br>`invalid-url`<br>`sort-failed`<br>`persistence-error`<br>`failed` | Fatal operational failure, unresolvable place ID, or unrecognized page markup |
 
 ---
 
-## Testing
+## Database Schema (Schema v2)
 
-```bash
-# Run complete test suite (unit + integration + mocks)
-npm test
+Stored in SQLite via `DatabaseSync` in WAL mode with foreign keys enabled.
 
-# Run DOM fixture integration tests
-npm run test:integration
-```
+### `reviews` Table
+
+| Column | Type | Description |
+|---|---|---|
+| `reviewId` | TEXT PRIMARY KEY | Review identifier from `data-review-id` |
+| `placeId` | TEXT NOT NULL | Internal feature ID (`0x...:0x...`) |
+| `reviewerName` | TEXT | Author display name (or null) |
+| `reviewerProfileUrl` | TEXT | Link to author Contributions profile |
+| `rating` | INTEGER | Validated 1-5 star rating |
+| `ratingRaw` | TEXT | Raw rating text (e.g., "5 stars") |
+| `reviewText` | TEXT | Full text, cleaned of "More" buttons and owner reply text |
+| `textTruncated` | INTEGER | `1` if review ends in an unresolved truncation marker (`…`) |
+| `originalLanguage` | TEXT | Detected language code |
+| `translatedByGoogle` | INTEGER | `1` if translated, `0` if not |
+| `publishedDateRaw` | TEXT | Raw relative or absolute date string |
+| `publishedDateParsed` | TEXT | Estimated ISO 8601 UTC timestamp (window midpoint) |
+| `publishedDateEarliest` | TEXT | Earliest bound of the uncertainty window (ISO UTC) |
+| `publishedDateLatest` | TEXT | Latest bound of the uncertainty window (ISO UTC) |
+| `datePrecision` | TEXT | `minute`, `hour`, `day`, `week`, `month`, `year` |
+| `isEdited` | INTEGER | `1` if review was edited |
+| `ownerResponse` | TEXT | Separate owner response text |
+| `ownerResponseDateRaw` | TEXT | Raw owner response date string |
+| `ownerResponseDateParsed` | TEXT | Estimated ISO UTC timestamp for owner response |
+| `ownerResponseDateEarliest`| TEXT | Earliest bound for owner response |
+| `ownerResponseDateLatest`  | TEXT | Latest bound for owner response |
+| `reviewUrl` | TEXT | Canonical direct link to the specific review |
+| `listingUrl` | TEXT NOT NULL | URL used to collect the review |
+| `feedRank` | INTEGER | 1-based order of appearance in the review feed |
+| `runId` | TEXT | Job ID that collected this record |
+| `collectedAt` | TEXT | First collection ISO timestamp |
+| `updatedAt` | TEXT | Last update ISO timestamp |
+
+---
+
+## Key Technical Details
+
+### Feature IDs vs. Places API IDs
+Google Maps URLs use a hex feature ID pair (e.g. `0x808f7e1807365605:0x601f7a97f0ce6c6b`), not the 27-character base64 Place ID used by Google Places API (`ChIJ...`). This scraper resolves and stores the internal feature ID.
+
+### Date Uncertainty Windows
+Relative dates like "3 months ago" do not represent a single point in time. They describe a window: `[now - 4 months, now - 3 months]`. We store:
+- `publishedDateEarliest`: earliest possible timestamp
+- `publishedDateLatest`: latest possible timestamp
+- `publishedDateParsed`: midpoint estimate
+
+When a place is re-collected months later, observation windows **intersect** (`earliest = max(e1, e2)`, `latest = min(l1, l2)`). This narrows uncertainty rather than allowing dates to artificially drift forward.
+
+### Truncation Defense
+Reviews with long text display a "More" button. The collector expands all collapsed cards in a batch, verifies DOM settlement, and inspects cards post-expansion. If any card still terminates in `…`, it is flagged with `textTruncated = 1` and prevents a false `done` status.
+
+### Formula Injection Protection
+CSV exports automatically neutralize spreadsheet formula execution risks by escaping leading `= + - @ \t \r` characters. Disable with `--raw-csv` if raw output is required. JSON exports are schema-versioned and unescaped.
+
+---
+
+## Known Limitations
+
+1. **Anonymous Access Caps**: Unauthenticated Google Maps sessions may return zero review cards or a small preview batch. Full-history extraction requires an authenticated profile via `npm run cli -- login`.
+2. **Selector Drift**: Google Maps periodically changes its obfuscated DOM class names. The selector engine prioritizes stable ARIA roles and attributes with class fallbacks. When field coverage drops below 90%, it triggers `structure-drift` with full diagnostics.
+3. **Advertised vs. Actual Reviews**: Google's displayed review count includes rating-only submissions that do not generate review cards in the feed. The `--min-completeness` threshold (default 90%) accounts for this variance.
+4. **Edited Reviews**: A review marked "Edited" reflects the timestamp of the last edit, not the original post date.
+
+---
+
+## Legal & Compliance Notice
+
+This tool is intended for research, personal data backup, and legitimate auditing purposes. Automated querying of Google Maps may violate Google's Terms of Service. Use at your own risk. When using a signed-in Google account, heavy automated scraping may put the account at risk of temporary or permanent access restrictions.
 
 ---
 

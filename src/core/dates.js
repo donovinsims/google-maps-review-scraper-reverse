@@ -1,100 +1,50 @@
-// Date parsing with defensible precision.
-// Google Maps shows review dates as absolute ("Sep 12, 2023") or relative
-// ("2 weeks ago", "a month ago", "a year ago") depending on listing language.
-// We parse to ISO only when the string maps to a defensible calendar window.
-
-const UNIT_MS = {
-  minute: 60_000, hour: 3_600_000, day: 86_400_000,
-  week: 604_800_000, month: 2_592_000_000, year: 31_536_000_000,
-};
-
-const DEFAULT_LOCALE_MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June', 'July',
-  'August', 'September', 'October', 'November', 'December',
-];
-
-function monthIndexFromName(name, months = null) {
-  const norm = (x) => x.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-  const p = norm(name).slice(0, 3);
-  if (months && typeof months === 'object' && !Array.isArray(months)) {
-    // locale table given as {monthName: 0-based index}
-    for (const [key, idx] of Object.entries(months)) {
-      if (norm(key).startsWith(p)) return idx;
-    }
-    return -1;
-  }
-  const arr = months ?? DEFAULT_LOCALE_MONTHS;
-  for (let i = 0; i < arr.length; i++) {
-    if (norm(arr[i]).startsWith(p)) return i;
-  }
-  return -1;
+// Inclusive UTC windows express the uncertainty of public relative-date labels.
+const UNIT_MS = { minute: 60000, hour: 3600000, day: 86400000, week: 604800000 };
+const EN_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+export const DE_MONTHS = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
+const fold = s => s.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+function monthIndex(name, months = EN_MONTHS) {
+  const entries = Array.isArray(months) ? months.map((n,i)=>[n,i]) : Object.entries(months);
+  return entries.find(([n])=>fold(n).slice(0,3)===fold(name).slice(0,3))?.[1] ?? -1;
 }
-
-/**
- * Parse a published-date string as shown by Google Maps.
- * @param {string|null} raw
- * @param {number|null} nowMs reference "now" (ms) for relative dates; defaults to Date.now()
- * @param {Record<string,number>} months month-name → 0-based index for non-English locales
- * @returns {null | {iso: string, precision: 'day'|'week'|'month'|'year', relative: boolean}}
- */
+function validDate(y,m,d) { if(y<100||m<0||m>11||d<1)return false;const dt=new Date(Date.UTC(y,m,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m&&dt.getUTCDate()===d; }
+function subtract(now,n,unit) {
+  if(UNIT_MS[unit])return now-n*UNIT_MS[unit];
+  const dt=new Date(now),day=dt.getUTCDate();dt.setUTCDate(1);
+  if(unit==='month')dt.setUTCMonth(dt.getUTCMonth()-n);else dt.setUTCFullYear(dt.getUTCFullYear()-n);
+  const maxDay=new Date(Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth()+1,0)).getUTCDate();dt.setUTCDate(Math.min(day,maxDay));return dt.getTime();
+}
+function window(earliest,latest,precision,relative,edited) {
+  if(!Number.isFinite(earliest)||!Number.isFinite(latest)||earliest>latest)return null;
+  try{return {earliest:new Date(earliest).toISOString(),latest:new Date(latest).toISOString(),estimate:new Date((earliest+latest)/2).toISOString(),precision,relative,edited};}catch{return null;}
+}
 export function prsToDate(raw, nowMs = null, months = null) {
-  if (raw == null) return null;
-  const now = nowMs ?? Date.now();
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    const ms = raw > 1e14 ? Math.floor(raw / 1000) : (raw < 1e11 ? raw * 1000 : raw);
-    return { iso: new Date(ms).toISOString(), precision: 'minute', relative: false };
+  if(raw==null)return null;
+  const now=nowMs??Date.now();if(!Number.isFinite(now))return null;
+  const numeric = typeof raw==='number' || /^\d{10,16}$/.test(String(raw).trim());
+  if(numeric){let n=Number(raw);if(!Number.isFinite(n))return null;n=n>1e14?Math.floor(n/1000):n<1e11?n*1000:n;return window(n,n,'minute',false,false);}
+  let s=String(raw).trim().replace(/\u00a0/g,' ');const edited=/^(edited|bearbeitet)\b/i.test(s);s=s.replace(/^(edited|bearbeitet)\s*:?\s*/i,'').toLowerCase();
+  if(!s)return null;
+  let match=/^(a|an|\d+)\s+(min(?:ute)?s?|hrs?|hours?|days?|weeks?|months?|years?)\s+ago$/.exec(s);
+  if(!match){const de=/^vor\s+(\d+|einem|einer)\s+(minuten?|stunden?|tage?n?|wochen?|monate?n?|jahre?n?)$/.exec(s);if(de){const name=de[2];match=[de[0],/^ein/.test(de[1])?'1':de[1],name.startsWith('min')?'minute':name.startsWith('stund')?'hour':name.startsWith('tag')?'day':name.startsWith('woch')?'week':name.startsWith('monat')?'month':'year'];}}
+  if(match){const n=/^(a|an)$/.test(match[1])?1:Number(match[1]);if(!Number.isSafeInteger(n)||n<1)return null;const stem=match[2];const unit=stem.startsWith('min')?'minute':/^(hr|hour)/.test(stem)?'hour':stem.startsWith('day')?'day':stem.startsWith('week')?'week':stem.startsWith('month')?'month':'year';return window(subtract(now,n+1,unit),subtract(now,n,unit),unit,true,edited);}
+  const iso=/^(\d{4})-(\d{2})-(\d{2})(T.*)?$/.exec(s);
+  if(iso){const y=+iso[1],m=+iso[2]-1,d=+iso[3];if(!validDate(y,m,d))return null;
+    if(iso[4]){if(!/^t\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:z|[+-]\d{2}:\d{2})$/.test(iso[4]))return null;const n=Date.parse(s);return window(n,n,'minute',false,edited);}
+    const start=Date.UTC(y,m,d);return window(start,start+86400000-1,'day',false,edited);
   }
-  const s = String(raw).trim().toLowerCase().replace(/\u00a0/g, ' ');
-  if (!s) return null;
-
-  // Unix epoch string (seconds or ms or microseconds)
-  if (/^\d{10,16}$/.test(s)) {
-    const num = Number(s);
-    const ms = num > 1e14 ? Math.floor(num / 1000) : (num < 1e11 ? num * 1000 : num);
-    return { iso: new Date(ms).toISOString(), precision: 'minute', relative: false };
+  const isoMonth=/^(\d{4})-(\d{2})$/.exec(s);
+  let y,m,d;
+  if(isoMonth){y=+isoMonth[1];m=+isoMonth[2]-1;}
+  else {
+    const en=/^([\p{L}]+)\.?\s+(\d{1,2}),?\s+(\d{4})$/u.exec(s);
+    const de=/^(\d{1,2})\.?\s+([\p{L}]+)\.?\s+(\d{4})$/u.exec(s);
+    const mo=/^([\p{L}]+)\.?\s+(\d{4})$/u.exec(s);
+    if(en){m=monthIndex(en[1],months??EN_MONTHS);d=+en[2];y=+en[3];}
+    else if(de){m=monthIndex(de[2],months??DE_MONTHS);d=+de[1];y=+de[3];}
+    else if(mo){m=monthIndex(mo[1],months??EN_MONTHS);y=+mo[2];}else return null;
   }
-
-  // Relative: "a|2|12 ... minutes|hours|days|weeks|months|years ago"
-  const stem = s.replace(/^(?:about |just |almost |edited |edited\s+\w+\s+)+/u, '');
-  const rel = /^(?:a|an|(?:(\d{1,3}))|(\d{1,3}))\s*(min(?:ute)?s?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*(?:ago)?$/i
-    .exec(stem)
-    ?? /^(\d{1,3})\s*(min(?:ute)?s?|mins?|hours?|hrs?|days?|weeks?|months?|years?)$/i.exec(stem);
-  if (rel) {
-    let n = rel[1] ?? rel[2];
-    if (n == null || n === '' || /^(a|an)$/i.test(n)) n = 1;
-    n = Number(n);
-    const unit = rel[3] ? Object.entries(UNIT_MS)
-      .find(([k]) => rel[3].toLowerCase().startsWith(k.slice(0, 4)))?.[1] : null;
-    if (!unit) return null;
-    const ms = now - n * unit;
-    if (!Number.isFinite(ms)) return null;
-    const precision = unit >= UNIT_MS.month ? (Math.round(unit / 2_592_000_000) >= 12 ? 'year' : 'month')
-      : unit === UNIT_MS.week ? 'week' : unit === UNIT_MS.day ? 'day' : 'minute';
-    return { iso: new Date(ms).toISOString(), precision, relative: true };
-  }
-
-  // Absolute: "Mar 4, 2021", "March 4 2021", "2021-03-04"
-  const abs = /([\p{L}]+)\s+(\d{1,2}),?\s+(\d{4})/u.exec(s) ?? /^\s*(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (abs) {
-    if (/^\d{4}-/.test(s)) {
-      return { iso: s.trim(), precision: 'day', relative: false };
-    }
-    const mi = monthIndexFromName(abs[1], months ?? undefined);
-    if (mi == null || mi < 0) return null;
-    const day = Number(abs[2]);
-    const year = Number(abs[3]);
-    const dt = new Date(Date.UTC(year, mi, day));
-    if (Number.isNaN(dt.getTime())) return null;
-    return { iso: dt.toISOString().slice(0, 10), precision: 'day', relative: false };
-  }
-
-  // Absolute without day: "Mar 2021"
-  const absMo = /^([a-z]+)[ .]*(\d{4})$/.exec(s);
-  if (absMo) {
-    const mi = monthIndexFromName(absMo[1], months ?? undefined);
-    if (mi == null || mi < 0) return null;
-    return { iso: `${absMo[2]}-${String(mi + 1).padStart(2, '0')}`, precision: 'month', relative: false };
-  }
-
-  return null;
+  if(!validDate(y,m,d??1))return null;
+  const start=Date.UTC(y,m,d??1),end=d==null?Date.UTC(y,m+1,1)-1:start+86400000-1;
+  return window(start,end,d==null?'month':'day',false,edited);
 }

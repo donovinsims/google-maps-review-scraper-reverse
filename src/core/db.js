@@ -3,14 +3,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function openDb(dbPath = 'data/gmaps-reviews.db') {
   const isMemory = dbPath === ':memory:';
   const abs = isMemory ? ':memory:' : path.resolve(dbPath);
   if (!isMemory) mkdirSync(path.dirname(abs), { recursive: true });
   const db = new DatabaseSync(abs);
+  try {
   db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
+    PRAGMA synchronous = NORMAL;
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS businesses (
       placeId       TEXT PRIMARY KEY,
@@ -77,5 +81,23 @@ export function openDb(dbPath = 'data/gmaps-reviews.db') {
       config      TEXT
     );
   `);
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than supported schema ${SCHEMA_VERSION}`);
+  if (version < 2) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const additions = {
+        reviews: { textTruncated: 'INTEGER', isEdited: 'INTEGER', ownerResponseIsEdited: 'INTEGER', publishedDateEarliest: 'TEXT', publishedDateLatest: 'TEXT', ownerResponseDateEarliest: 'TEXT', ownerResponseDateLatest: 'TEXT', feedRank: 'INTEGER' },
+        businesses: { lastCompletedAt: 'TEXT' },
+        job_items: { diagnostics: 'TEXT', expectedCount: 'INTEGER', collectedCount: 'INTEGER', completeness: 'REAL' },
+      };
+      for (const [table, columns] of Object.entries(additions)) {
+        const present = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+        for (const [column, type] of Object.entries(columns)) if (!present.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      }
+      db.exec('PRAGMA user_version = 2; COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
   return db;
+  } catch (error) { db.close(); throw error; }
 }

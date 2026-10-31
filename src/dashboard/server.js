@@ -1,73 +1,39 @@
-// Local-only dashboard: job list, review browse, export downloads.
 import express from 'express';
 import path from 'node:path';
-import fs from 'node:fs';
-import { PROJECT_ROOT } from '../cli/index.js';
+import { PROJECT_ROOT, DEFAULT_DB } from '../core/paths.js';
+import { createStore } from '../core/store.js';
+import { positiveNumber } from '../core/config.js';
+import { redact } from '../core/redact.js';
+import { toCsv, toJsonExport } from '../export/exporters.js';
 
-const DEFAULT_DB = path.join(PROJECT_ROOT, 'data', 'gmaps-reviews.db');
-
-export function createDashboardServer({ dbPath = DEFAULT_DB, port = 7877 } = {}) {
-  const app = express();
-  app.use(express.json());
-  const storeRef = { current: null };
-  const getStore = async () => {
-    if (!storeRef.current) {
-      const { createStore } = await import('../core/store.js');
-      storeRef.current = createStore(dbPath);
-    }
-    return storeRef.current;
-  };
-  app.use('/static', express.static(path.join(PROJECT_ROOT, 'src', 'dashboard', 'static')));
-
-  app.get('/', (_req, res) => res.sendFile(path.join(PROJECT_ROOT, 'src', 'dashboard', 'static', 'index.html')));
-
-  app.get('/api/places', async (_req, res) => {
-    const store = await getStore();
-    const places = store.selectPlaces().map((p) => ({ ...p, reviewCount: store.countReviews(p.placeId) }));
-    res.json({ schemaVersion: 1, places });
+export function createDashboardServer({dbPath=DEFAULT_DB,port=7877}={}) {
+  const app=express(),store=createStore(dbPath);let server;
+  const route=handler=>(req,res,next)=>Promise.resolve().then(()=>handler(req,res)).catch(next);
+  app.disable('x-powered-by');
+  app.use((req,res,next)=>{
+    const actual=server?.address()?.port??port;
+    if(![`127.0.0.1:${actual}`,`localhost:${actual}`].includes(req.headers.host?.toLowerCase()))return res.status(403).json({error:'Localhost Host header required'});
+    next();
   });
-
-  app.get('/api/places/:placeId/reviews', async (req, res) => {
-    const store = await getStore();
-    res.json({ schemaVersion: 1, placeId: req.params.placeId, reviews: store.selectReviews({ placeId: req.params.placeId }) });
-  });
-
-  app.get('/api/jobs', async (_req, res) => {
-    const store = await getStore();
-    const dbJobs = store.selectRecentJobs ? store.selectRecentJobs(20) : [];
-    if (dbJobs.length > 0) {
-      return res.json({ schemaVersion: 1, jobs: dbJobs });
-    }
-    // Fallback: summary files under data/out/.
-    const dir = path.join(PROJECT_ROOT, 'data', 'out');
-    let files = [];
-    if (fs.existsSync(dir)) files = fs.readdirSync(dir).filter((f) => f.startsWith('run-') && f.endsWith('.json'));
-    files.sort().reverse();
-    const jobs = files.map((f) => ({ name: f, data: JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) }));
-    res.json({ schemaVersion: 1, jobs });
-  });
-
-  app.get('/api/export/csv', async (req, res) => {
-    const store = await getStore();
-    const rows = store.selectReviews(req.query.placeId ? { placeId: req.query.placeId } : {});
-    const { toCsv } = await import('../export/exporters.js');
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="reviews-${encodeURIComponent(req.query.placeId ? String(req.query.placeId) : 'all')}.csv"`);
-    res.send(toCsv(rows));
-  });
-
-  app.get('/api/export/json', async (req, res) => {
-    const store = await getStore();
-    const rows = store.selectReviews(req.query.placeId ? { placeId: req.query.placeId } : {});
-    const { toJsonExport } = await import('../export/exporters.js');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="reviews-${encodeURIComponent(req.query.placeId ? String(req.query.placeId) : 'all')}.json"`);
-    res.send(toJsonExport(rows, { placeId: req.query.placeId ?? null }));
-  });
-
-  // Express 5 pattern: regex fallback instead of the removed '*' route.
-  app.get(/^\/[^^]*/, (_req, res) => res.sendFile(path.join(PROJECT_ROOT, 'src', 'dashboard', 'static', 'index.html')));
-
-  const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
+  app.get('/api/places',route((_req,res)=>res.json({schemaVersion:2,places:store.selectPlaces().map(p=>({...p,reviewCount:store.countReviews(p.placeId)}))})));
+  app.get('/api/places/:placeId/reviews',route((req,res)=>{
+    const limit=req.query.limit==null?50:Math.min(500,positiveNumber(req.query.limit,'limit',{integer:true,min:1}));
+    const offset=req.query.offset==null?0:positiveNumber(req.query.offset,'offset',{integer:true,min:0});
+    if(!store.selectPlaces().some(p=>p.placeId===req.params.placeId))return res.status(404).json({error:'Unknown place'});
+    res.json({schemaVersion:2,placeId:req.params.placeId,total:store.countReviews(req.params.placeId),limit,offset,reviews:store.selectReviews({placeId:req.params.placeId,limit,offset})});
+  }));
+  app.get('/api/jobs',route((_req,res)=>res.json({schemaVersion:2,jobs:store.selectRecentJobs(20).map(j=>{
+    const collected=j.items.reduce((n,i)=>n+(i.collectedCount??0),0),known=j.items.length&&j.items.every(i=>i.expectedCount!=null);
+    const expected=known?j.items.reduce((n,i)=>n+i.expectedCount,0):null;
+    return {id:j.id,status:j.status,notes:j.notes,createdAt:j.createdAt,counts:j.counts,collected,expected,completeness:expected>0?Math.min(1,collected/expected):expected===0&&j.status==='completed'?1:null};
+  })})));
+  app.get('/api/export/csv',route((req,res)=>res.type('text/csv; charset=utf-8').attachment('reviews.csv').send(toCsv(store.selectReviews({placeId:req.query.placeId}),undefined,{bom:true}))));
+  app.get('/api/export/json',route((req,res)=>res.type('application/json; charset=utf-8').attachment('reviews.json').send(toJsonExport(store.selectReviews({placeId:req.query.placeId})))));
+  app.use('/api',(_req,res)=>res.status(404).json({error:'Unknown API route'}));
+  app.use('/static',express.static(path.join(PROJECT_ROOT,'src','dashboard','static')));
+  app.get('/',(_req,res)=>res.sendFile(path.join(PROJECT_ROOT,'src','dashboard','static','index.html')));
+  app.use((error,_req,res,_next)=>res.status(error.exitCode===64?400:500).json({error:redact(error.message)}));
+  server=app.listen(port,'127.0.0.1',()=>console.log(`Dashboard: http://127.0.0.1:${server.address().port}`));
+  server.once('close',()=>store.close());server.once('error',()=>store.close());
   return server;
 }

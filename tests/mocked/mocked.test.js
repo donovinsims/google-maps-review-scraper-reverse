@@ -138,10 +138,12 @@ test('store records and updates job lifecycle in SQLite', () => {
   assert.equal(recents[0].id, jobId);
 });
 
-test('isPlaceCollected correctly detects existing places within threshold', () => {
+test('V3: metadata alone is not a recently completed collection', () => {
   const s = memoryStore();
   assert.equal(s.isPlaceCollected('none'), false);
   s.upsertBusinessMeta({ placeId: 'biz1', name: 'Biz 1', listingUrl: 'http://maps/biz1' });
+  assert.equal(s.isPlaceCollected('biz1'), false);
+  s.markCompleted('biz1');
   assert.equal(s.isPlaceCollected('biz1'), true);
 });
 

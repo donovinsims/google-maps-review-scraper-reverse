@@ -57,3 +57,7 @@ test('withRetry skips non-retryable errors', async () => {
   );
   assert.equal(calls, 1);
 });
+test('S7: retry cancellation prevents attempts and aborts backoff',async()=>{
+  const controller=new AbortController();controller.abort();let calls=0;
+  await assert.rejects(withRetry(async()=>{calls++;},{signal:controller.signal}),e=>e.name==='AbortError');assert.equal(calls,0);
+});

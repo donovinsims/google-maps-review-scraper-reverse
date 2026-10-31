@@ -1,73 +1,62 @@
-// Browser & profile management for authenticated Google Maps sessions.
 import path from 'node:path';
 import fs from 'node:fs';
 import { chromium } from 'rebrowser-playwright';
-
-export function getProfileDir(projectRoot, profileName = 'default') {
-  const safeName = String(profileName).replace(/[^a-zA-Z0-9_-]/g, '_') || 'default';
-  return path.join(projectRoot, 'data', 'profiles', safeName);
-}
-
-export function hasSavedProfile(projectRoot, profileName = 'default') {
-  const p = getProfileDir(projectRoot, profileName);
-  return fs.existsSync(p) && fs.readdirSync(p).length > 0;
-}
-
-export function hasSystemChrome() {
-  return fs.existsSync('/Applications/Google Chrome.app');
-}
-
-export function parseProxy(proxyStr) {
-  if (!proxyStr) return undefined;
-  try {
-    const u = new URL(proxyStr);
-    const proxy = { server: `${u.protocol}//${u.host}` };
-    if (u.username) proxy.username = decodeURIComponent(u.username);
-    if (u.password) proxy.password = decodeURIComponent(u.password);
-    return proxy;
-  } catch {
-    return { server: proxyStr };
+import { PROJECT_ROOT } from '../core/paths.js';
+import { parseProxy } from '../core/config.js';
+import { throwIfAborted, closeWithTimeout } from '../core/cancel.js';
+import { redact } from '../core/redact.js';
+export { parseProxy };
+export function getProfileDir(projectRoot=PROJECT_ROOT, profileName='default') {return path.join(projectRoot,'data','profiles',String(profileName).replace(/[^a-zA-Z0-9_-]/g,'_')||'default');}
+export function hasSavedProfile(projectRoot=PROJECT_ROOT, profileName='default') {const dir=getProfileDir(projectRoot,profileName);return fs.existsSync(dir)&&fs.readdirSync(dir).length>0;}
+export const BROWSER_INSTALL_COMMAND='node node_modules/rebrowser-playwright/cli.js install chromium';
+export async function launchWithFallback(engine=chromium,profileDir=null,config={},deps={}) {
+  if(profileDir)fs.mkdirSync(profileDir,{recursive:true});
+  const options={headless:config.headless===true,locale:config.language??'en',viewport:{width:1400,height:960},proxy:config.proxyConfig??parseProxy(config.proxy),args:[`--lang=${config.language??'en'}`,'--no-first-run']};
+  const launch=opts=>profileDir?engine.launchPersistentContext(profileDir,opts):engine.launch(opts);
+  try{return {resource:await launch({...options,channel:'chrome'}),channel:'chrome'};}
+  catch(error){
+    error.message=redact(error.message,[options.proxy?.username,options.proxy?.password]);
+    if(/SingletonLock|profile.*(in use|locked)|ProcessSingleton/i.test(error.message))throw new Error('Profile is in use. Close its other browser window before retrying.');
+    if(!/not found|doesn.t exist|does not exist|not installed|ENOENT|distribution|Unsupported.*channel/i.test(error.message))throw error;
+    if(!(deps.existsSync??fs.existsSync)(engine.executablePath()))throw new Error(`Bundled Chromium is missing. Install with: ${BROWSER_INSTALL_COMMAND}`);
+    console.warn('Installed Chrome unavailable; trying bundled Chromium.');
+    return {resource:await launch(options),channel:'chromium'};
   }
 }
-
-/**
- * Open a headed browser session with a persistent profile.
- * Allows user to log into Google Maps once; cookies and credentials remain local.
- */
-export async function openLogin({ login = true, projectRoot, profileName = 'default', proxy = null, useChrome = true }) {
-  const profileDir = getProfileDir(projectRoot, profileName);
-  fs.mkdirSync(profileDir, { recursive: true });
-
-  const channel = (useChrome && hasSystemChrome()) ? 'chrome' : undefined;
-  console.log(`Opening browser (${channel ?? 'chromium'}) with persistent profile at: ${path.relative(projectRoot, profileDir)}`);
-  console.log(login
-    ? 'Log into your Google account in Google Maps. When finished, close the browser window.'
-    : 'Sign out or clear cookies in Google Maps. When finished, close the browser window.');
-
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
-    channel,
-    viewport: { width: 1400, height: 960 },
-    locale: 'en-US',
-    proxy: parseProxy(proxy),
-    args: [
-      '--lang=en-US',
-      '--disable-blink-features=AutomationControlled',
-      '--no-first-run',
-    ],
-  });
-
-  const page = context.pages()[0] ?? (await context.newPage());
-  const targetUrl = login
-    ? 'https://accounts.google.com/ServiceLogin?service=maps'
-    : 'https://www.google.com/maps';
-
-  await page.goto(targetUrl).catch(() => { });
-
-  // Keep process alive until user closes browser window
-  await new Promise((resolve) => {
-    context.on('close', resolve);
-  });
-
-  console.log('Browser closed. Profile state saved.');
+// Only boolean signals leave the page; account labels, cookies, and credentials are never returned.
+export function authSignalsInPage() {
+  const account=document.querySelector('a[aria-label*="Google Account" i],button[aria-label*="Google Account" i],a[aria-label*="Google-Konto" i],button[aria-label*="Google-Konto" i],a[href*="SignOutOptions"]');
+  const signin=document.querySelector('a[href*="accounts.google.com/ServiceLogin"],a[href*="accounts.google.com/signin"],a[href*="accounts.google.com/v3/signin"]');
+  const text=(document.body?.innerText??document.body?.textContent??'').slice(0,4000);
+  return {authState:account?'signed-in':signin?'anonymous':'unknown',insecureBrowser:/browser.*(?:not be secure|isn.t secure)|Browser.*nicht sicher/i.test(text)};
+}
+export async function detectAuthState(context,{signal,language='en',region='us'}={}) {
+  throwIfAborted(signal);const page=await context.newPage();
+  const abort=()=>{page.close().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
+  try{
+    await page.goto(`https://www.google.com/maps?hl=${encodeURIComponent(language)}&gl=${encodeURIComponent(region)}`,{waitUntil:'domcontentloaded',timeout:30000});
+    await page.waitForFunction(()=>document.querySelector('a[aria-label*="Google Account" i],a[aria-label*="Google-Konto" i],a[href*="accounts.google.com"]'),{timeout:5000}).catch(()=>{});
+    const signals=await page.evaluate(authSignalsInPage);
+    if(signals.insecureBrowser)console.warn('Google refused this browser. Try signing in manually with the installed Chrome profile; no workaround is applied.');
+    return signals.authState;
+  }catch(error){throwIfAborted(signal);console.warn(`Authentication probe could not be verified: ${redact(error.message)}`);return 'unknown';}
+  finally{signal?.removeEventListener('abort',abort);await page.close().catch(()=>{});}
+}
+export async function openLogin({login=true,projectRoot=PROJECT_ROOT,profileName='default',language='en',region='us',proxy,proxyConfig}={}) {
+  const dir=getProfileDir(projectRoot,profileName);
+  let {resource:context}=await launchWithFallback(chromium,dir,{headless:false,language,proxy,proxyConfig});
+  let didClose=false;
+  const page=context.pages()[0]??await context.newPage();
+  console.log(login?'Sign in to Google Maps in the opened window. Press Enter here or close that window when finished.':'Sign out in the opened window. Press Enter here or close it when finished.');
+  try {
+    const continueUrl = encodeURIComponent(`https://www.google.com/maps?hl=${language}&gl=${region}`);
+    const loginUrl = `https://accounts.google.com/ServiceLogin?continue=${continueUrl}&hl=${encodeURIComponent(language)}`;
+    await page.goto(login ? loginUrl : `https://www.google.com/maps?hl=${encodeURIComponent(language)}&gl=${encodeURIComponent(region)}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    let onInput,onClose;
+    const refusalPoll=setInterval(async()=>{try{if((await page.evaluate(authSignalsInPage)).insecureBrowser)console.warn('Google says this browser may not be secure. Use normal manual sign-in if available; no bypass is attempted.');}catch{}},5000);
+    try{await new Promise(resolve=>{onInput=()=>resolve();onClose=()=>{didClose=true;resolve();};context.once('close',onClose);process.stdin.once('data',onInput);process.stdin.resume();});}
+    finally{clearInterval(refusalPoll);process.stdin.off('data',onInput);process.stdin.pause();context.off('close',onClose);}
+    if(didClose)({resource:context}=await launchWithFallback(chromium,dir,{headless:false,language,proxy,proxyConfig}));
+    const state=await detectAuthState(context,{language,region});console.log(`Profile authentication: ${state}`);return state;
+  } finally {await closeWithTimeout(()=>context.close());}
 }

@@ -1,578 +1,273 @@
-// Core Google Maps place-reviews extractor (independent implementation).
-//
-// MEASURED (2026-10-30, macOS Chromium, signed-out): the anonymous site shows a
-// small preview feed (~6 cards / place) and redirects the "More reviews" action
-// to accounts.google.com sign-in. We treat sign-in as a normal-local-user affordance:
-// run `gmaps-reviews login` once to create a persistent profile owned by the user;
-// the collector never sees or stores the password. Without it we collect the
-// preview set only and label termination honestly (sign-in-required / preview).
-//
-// All page text and attributes are treated as untrusted data, never instructions.
-
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prsToDate } from '../core/dates.js';
-import { humanScroll, humanHover, randomDelay } from './human.js';
+import { SELECTORS } from './selectors.js';
+import { normalizeReview } from '../core/normalize.js';
+import { validateListingUrl, UsageError } from '../core/config.js';
+import { extractPlaceId } from '../core/place-id.js';
 import { classifyPage } from '../core/health.js';
+import { decideTermination, itemStatusFor } from '../core/termination.js';
+import { sleep, throwIfAborted } from '../core/cancel.js';
+import { redact } from '../core/redact.js';
+import { PROJECT_ROOT } from '../core/paths.js';
 
-export const S = {
-  container: 'div[data-review-id]',
-  star: 'span.kvMYJc, span.fzvQIb',
-  author: '.d4r55',
-  text: '.wiI7pd',
-  owner: '.CDe7pd',
-  translatedBubble: '.NTyMbe',
-  moreReviews: 'button[aria-label^="More reviews" i], button.more-reviews-button, button:has-text("More reviews")',
-  moreText: 'button.w8nwRe[aria-label="See more" i], .w8Iiyf, button[aria-label="More"]',
-  reviewsTab: 'button[role="tab"][aria-label*="review" i]',
-  sortButton: 'button[aria-label*="Sort" i]',
-};
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-const clean = (s) => (s == null ? null : (String(s).replace(/\s+/g, ' ').trim() || null));
-
-/** Canonical input handling: {canonical} for place URLs, {shortLink} for share links. */
-export function normalizePlaceUrl(raw, { hl = 'en', gl = 'us' } = {}) {
-  let u;
-  try { u = new URL(raw); } catch { throw new TypeError(`invalid URL: ${raw}`); }
-  const host = u.hostname.toLowerCase();
-  if (host.endsWith('maps.app.goo.gl')) return { shortLink: raw, canonical: null };
-  if (host.endsWith('google.com') && /\/maps\/place\//.test(u.pathname)) {
-    u.searchParams.set('hl', hl);
-    u.searchParams.set('gl', gl);
-    return { canonical: u.toString() };
-  }
-  // maps/search URLs are accepted: the collector resolves them to a place URL
-  // by clicking past the result list. Share links map.app.goo.gl above.
-  if (host.endsWith('google.com') && /\/maps\/search\//.test(u.pathname)) {
-    u.searchParams.set('hl', hl);
-    u.searchParams.set('gl', gl);
-    return { searchUrl: u.toString(), canonical: null };
-  }
-  throw new TypeError(`not a recognized Google Maps place/search URL: ${raw}`);
+export const S = { container: SELECTORS.card, moreText: SELECTORS.moreText, reviewsTab: SELECTORS.reviewsTab, moreReviews: SELECTORS.moreReviews, sortButton: SELECTORS.sortButton };
+export const DEFAULTS = { networkTimeoutMs: 60000, scrollIdleMs: 1500, expansionWaitMs: 250, expansionPasses: 8, placeIdWaitMs: 15000, maxDiagErrors: 40, stallTimeoutMs: 90000, hardTimeoutMs: 3600000 };
+export function normalizePlaceUrl(raw,{hl='en',gl='us'}={}) {
+  if(!validateListingUrl(raw))throw new TypeError('Not a recognized HTTP(S) Google Maps place/search URL');
+  const url=new URL(raw);if(url.hostname==='maps.app.goo.gl')return {shortLink:url.href,canonical:null};
+  url.searchParams.set('hl',hl);url.searchParams.set('gl',gl);
+  return url.pathname.includes('/maps/search/')?{searchUrl:url.href,canonical:null}:{canonical:url.href};
 }
-
-/**
- * In-page card extraction. Pure function of the card element (Playwright
- * serializes this real function; runs in the page with sync DOM APIs).
- */
-export function extractInPage(card) {
-  const q = (sel) => card.querySelector(sel);
-  const textOf = (el) => (el ? (String(el.textContent).replace(/\s+/g, ' ').trim() || null) : null);
-
-  const starEl = q('span.kvMYJc, span.fzvQIb');
-  const ratingRaw = starEl ? (starEl.getAttribute('aria-label') || textOf(starEl)) : null;
-  let rating = null;
-  if (ratingRaw) {
-    const m = /([1-5](?:\.\d)?)\s*star/i.exec(ratingRaw) || /(\d)\s*\/\s*5/.exec(ratingRaw);
-    rating = m ? Number(m[1]) : null;
-  }
-
-  const transEl = q('[data-is-english-language-translation]') || q('.NTyMbe');
-  let translatedByGoogle = null;
-  if (transEl) {
-    translatedByGoogle = transEl.hasAttribute('data-is-english-language-translation')
-      ? transEl.getAttribute('data-is-english-language-translation') === 'true'
-      : true;
-  }
-
-  const dateRaw = textOf(q('span.rsqaWe'));
-
-  const ownerEl = q('.CDe7pd');
-  let ownerResponse = null;
-  let ownerResponseDateRaw = null;
-  if (ownerEl) {
-    const od = q('span.DZSIDd') || q('.xRkPPb');
-    ownerResponseDateRaw = od ? textOf(od) : null;
-    const bodyEl = q('.CDe7pd .wiI7pd, .CDe7pd .MyEned');
-    if (bodyEl) {
-      ownerResponse = textOf(bodyEl);
-    } else {
-      let full = textOf(ownerEl) || '';
-      full = full.replace(/^Response\s+from\s+the\s+owner\.?:?\s*/i, '');
-      if (ownerResponseDateRaw && full.startsWith(ownerResponseDateRaw)) {
-        full = full.slice(ownerResponseDateRaw.length);
-      }
-      ownerResponse = full.trim() || null;
-    }
-  }
-
-  const profBtn = q('button[data-href*="contrib/"]');
-  const profLink = q('a[href*="contrib/"]');
-
-  return {
-    reviewId: card.getAttribute('data-review-id'),
-    originalLanguage: card.getAttribute('data-review-language'),
-    reviewerName: textOf(q('.d4r55')),
-    reviewerProfileUrl: profBtn ? profBtn.getAttribute('data-href') : (profLink ? profLink.getAttribute('href') : null),
-    rating,
-    ratingRaw,
-    reviewText: textOf(q('.wiI7pd')),
-    translatedByGoogle,
-    publishedDateRaw: dateRaw,
-    ownerResponse,
-    ownerResponseDateRaw,
+// Self-contained: Playwright serializes this exact function. Tests run it on a real DOM.
+export function extractInPage({card=null,selectors,seenIds=[],maxRecords=null}) {
+  const clean=value=>{const text=String(value??'').replace(/\s+/g,' ').trim();return text||null;};
+  // Google nests duplicate data-review-id wrappers (event divs, buttons) inside real cards.
+  // Prefer the specific card selector, fall back to the bare attribute, and keep only outermost containers: drop any element whose own ancestor is also a card.
+  const cardRoot=selectors.cardFallback??selectors.card;
+  let all;
+  if(card)all=[card];
+  else{all=[...document.querySelectorAll(selectors.card)];
+    if(!all.length&&cardRoot!==selectors.card)all=[...document.querySelectorAll(cardRoot)];
+    all=all.filter(el=>!el.parentElement?.closest(cardRoot));}
+  const seen=new Set(seenIds),sample=all.slice(0,20),coverage={reviewId:0,reviewerName:0,rating:0,publishedDateRaw:0};
+  const extract=element=>{
+    const owner=selectors.ownerResponse.map(s=>element.querySelector(s)).find(Boolean)??null;
+    const find=(field,root=element,excludeOwner=false)=>{
+      for(const selector of selectors[field])for(const node of root.querySelectorAll(selector))if(!excludeOwner||!owner?.contains(node))return node;
+      return null;
+    };
+    const text=node=>{if(!node)return null;const clone=node.cloneNode(true);for(const button of clone.querySelectorAll('button,[role="button"]'))button.remove();return clean(clone.textContent);};
+    const body=find('reviewText',element,true),stars=find('rating',element,true),date=find('publishedDateRaw',element,true),profile=find('reviewerProfileUrl',element,true);
+    const ratingRaw=stars?.getAttribute('aria-label')??text(stars);
+    const match=/^(?:rated\s+)?([1-5])(?:\.0)?\s*(?:stars?|\/\s*5|out of 5|sterne?|von 5)$/i.exec(ratingRaw?.trim()??'');
+    const ownerDate=owner?find('ownerResponseDateRaw',owner):null,ownerBody=owner?find('reviewText',owner):null;
+    let ownerResponse=text(ownerBody);
+    if(owner&&!ownerBody){const clone=owner.cloneNode(true);for(const node of clone.querySelectorAll([...selectors.ownerResponseDateRaw,'button','[role="button"]'].join(',')))node.remove();ownerResponse=clean(clone.textContent)?.replace(/^(Response from the owner|Antwort vom Inhaber)\s*:?\s*/i,'')||null;}
+    const reviewText=text(body),translation=element.querySelector('[data-is-english-language-translation],.NTyMbe');
+    return {reviewId:element.getAttribute('data-review-id')||null,reviewerName:text(find('reviewerName',element,true)),reviewerProfileUrl:profile?.getAttribute('data-href')??profile?.getAttribute('href')??null,
+      rating:match?Number(match[1]):null,ratingRaw,reviewText,originalLanguage:element.getAttribute('data-review-language')??body?.getAttribute('lang')??null,
+      translatedByGoogle:translation?(translation.getAttribute('data-is-english-language-translation')!=='false'):null,
+      publishedDateRaw:text(date)??date?.getAttribute('datetime')??null,ownerResponse,ownerResponseDateRaw:text(ownerDate)??ownerDate?.getAttribute('datetime')??null,
+      textTruncated:Number(/(?:…|\.{3})\s*$/.test(reviewText??'')||/(?:…|\.{3})\s*$/.test(ownerResponse??''))};
   };
+  const cache=new Map();for(const element of sample){const r=extract(element);cache.set(element,r);for(const field of Object.keys(coverage))if(r[field]!=null)coverage[field]++;}
+  const reviews=[];for(const element of all){const id=element.getAttribute('data-review-id');if(id&&seen.has(id))continue;if(maxRecords!=null&&reviews.length>=maxRecords)break;reviews.push(cache.get(element)??extract(element));}
+  return {reviews,cardCount:all.length,fieldCoverage:Object.fromEntries(Object.entries(coverage).map(([k,v])=>[k,sample.length?v/sample.length:null])),sampleSize:sample.length};
 }
-
-export const DEFAULTS = {
-  hl: 'en',
-  gl: 'us',
-  placeTimeoutMs: 300_000,
-  networkTimeoutMs: 60_000,
-  afterClickMs: 1200,
-  afterClickGrowthMs: 12_000,
-  scrollIdleMs: 1500,
-  maxMoreClicks: 600,
-  expandBatch: 80,
-  maxDiagErrors: 40,
-};
-
-/** Cookies that suppress consent/promo chrome for anonymous visitors (public behavior, no auth). */
-export function consentCookies() {
-  const expires = Math.floor(Date.now() / 1000) + 180 * 86_400;
-  return [
-    { name: 'CONSENT', value: 'PENDING+987', domain: '.google.com', path: '/', expires },
-    { name: 'SOCS', value: 'CAESEwgDEgk2ODE3MjYwMDgaAmVuIAEaBgiAoLCXBg', domain: '.google.com', path: '/', expires },
-  ];
+export function expandInPage({selectors}) {
+  let count=0;
+  const root=selectors.cardFallback??selectors.card;
+  let cards=[...document.querySelectorAll(selectors.card)];
+  if(!cards.length)cards=[...document.querySelectorAll(root)];
+  cards=cards.filter(el=>!el.parentElement?.closest(root));
+  for(const card of cards)for(const button of [...card.querySelectorAll(selectors.moreText)]){
+    const label=button.getAttribute('aria-label')??button.textContent??'';
+    if(label==='More'||button.getAttribute('aria-expanded')==='true'||/^(less|weniger)$/i.test(label.trim()))continue;
+    button.click();count++;
+  }
+  return count;
 }
-
-async function pickPlaceRating(page) {
-  try {
-    const text = await page.locator('div.F7nice span[aria-hidden="true"], span.fontDisplayLarge').first().textContent({ timeout: 2000 });
-    const num = parseFloat(text?.trim()?.replace(',', '.'));
-    if (!isNaN(num) && num >= 1 && num <= 5) return num;
-  } catch {}
-  try {
-    const aria = await page.locator('span.ceNzKf, div.F7nice span[aria-label*="star" i]').first().getAttribute('aria-label', { timeout: 2000 });
-    const m = /([1-5](?:[.,]\d)?)\s*star/i.exec(aria ?? '');
-    if (m) return parseFloat(m[1].replace(',', '.'));
-  } catch {}
+export function pickPlaceRatingInPage({selectors}) {
+  for(const selector of selectors.placeRating)for(const node of document.querySelectorAll(selector)){
+    const text=(node.getAttribute('aria-label')??node.textContent??'').trim();
+    const m=/^([1-5](?:[.,]\d+)?)\s*(?:stars?|sterne?)?$/i.exec(text);
+    if(m&&Number(m[1].replace(',','.'))<=5)return Number(m[1].replace(',','.'));
+  }
   return null;
 }
-
-/**
- * Collect reviews for one place.
- * @param {import('playwright').Page} page
- * @param {{url: string, sortMode?: 'newest'|'highest'|'lowest'|'default',
- *          maxReviews?: number, language?: {hl:string,gl:string}, overrides?: object}} input
- * @param {(event: string, data?: object) => void} [onProgress]
- */
-export async function scrapePlaceReviews(page, input, onProgress = () => {}) {
-  const cfg = { ...DEFAULTS, ...(input.overrides ?? {}), ...(input.language ?? {}) };
-  const startedAt = Date.now();
-  const seen = new Set();
-  const collected = [];
-  const diag = { moreClicks: 0, expandClicks: 0, consentScreens: 0, staleElements: 0, pageErrors: [] };
-  const place = { name: null, placeId: null, rating: null, reviewsCount: null, url: null };
-  let termination = { reason: 'not-terminated' };
-  let duplicates = 0;
-
-  const norm = normalizePlaceUrl(input.url, cfg);
-  const gotoUrl = norm.canonical ?? norm.searchUrl ?? norm.shortLink;
-  const alreadyHere = /maps\/place|maps\/search/.test(page.url());
-  if (!alreadyHere) {
-    await page.goto(gotoUrl, { waitUntil: 'domcontentloaded', timeout: cfg.networkTimeoutMs });
+export function readSurfaceInPage({selectors}) {
+  const body=(document.body?.innerText??document.body?.textContent??'').slice(0,2048);
+  let expected=null;
+  for(const node of document.querySelectorAll(selectors.reviewsTab+','+selectors.moreReviews)){
+    const label=node.getAttribute('aria-label')??node.textContent??'';const match=/(\d[\d.,\s\u202f]*)/.exec(label);
+    if(match&&!/[kmb]\b/i.test(label.slice(match.index+match[0].length))){expected=Number(match[1].replace(/\D/g,''));break;}
   }
-
-  if (norm.searchUrl) {
-    // Wait for the results list to actually render before clicking through.
-    await page.waitForSelector('a[href*="/maps/place/"], div[data-review-id]', { timeout: 30_000 }).catch(() => { });
-    const resolved = await resolvePlaceFromSearch(page).catch(() => false);
-    if (!resolved && !/\/maps\/place\//.test(page.url())) {
-      termination = { reason: 'search-mismatch', detail: `could not match query to a business listing: ${norm.searchUrl}` };
-    }
+  const leaves=[...document.querySelectorAll('span,div,[role="status"]')].filter(n=>!n.children.length).map(n=>(n.textContent??'').trim());
+  const cardRoot=selectors.cardFallback??selectors.card;
+  const firstCard=[...document.querySelectorAll(cardRoot)].find(el=>!el.parentElement?.closest(cardRoot))??null;
+  const reviewFeed=firstCard?.closest(selectors.feed)??firstCard?.parentElement;
+  const endMarkerSeen=!!reviewFeed&&[...reviewFeed.querySelectorAll('span,div,[role="status"]')]
+    .filter(node=>!node.children.length&&!node.closest(cardRoot))
+    .some(node=>/^(you(?:’|')ve reached the end(?: of the list)?|no more reviews|keine weiteren rezensionen)[.!]?$/i.test((node.textContent??'').trim()));
+  return {body,expected,recaptchaIframe:!!document.querySelector('iframe[src*="recaptcha"],iframe[title*="recaptcha" i]'),consentForm:!!document.querySelector('form[action*="consent.google"]'),
+    spinnerVisible:[...document.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(n=>!n.hidden&&n.getAttribute('aria-hidden')!=='true'),
+    endMarkerSeen,
+    noReviewsDetected:expected===0||!firstCard&&leaves.some(t=>/^(no reviews(?: yet)?|noch keine rezensionen|keine bewertungen)(?:\.|!)?$/i.test(t)),
+    name:[...document.querySelectorAll('h1')].map(n=>n.textContent.trim()).find(t=>t&&!/^(results|ergebnisse|sponsored|gesponsert)$/i.test(t))??null};
+}
+export function scrollInPage({selectors,up=false}) {
+  const cardRoot=selectors.cardFallback??selectors.card;
+  const card=[...document.querySelectorAll(cardRoot)].find(el=>!el.parentElement?.closest(cardRoot))??null;
+  const anchor=card??[...document.querySelectorAll('h1')].find(node=>! /^(results|ergebnisse|sponsored|gesponsert)$/i.test(node.textContent.trim()));
+  if(!anchor)return;
+  let scroller=card?.closest(selectors.feed)??anchor.parentElement;
+  for(let node=anchor.parentElement;node;node=node.parentElement)if(node.scrollHeight>node.clientHeight+100&&node.clientHeight>100){scroller=node;break;}
+  if(scroller)scroller.scrollTop=up?0:scroller.scrollHeight;
+}
+export function sortPattern(mode) {
+  const patterns={newest:/newest|neueste/i,relevant:/relevant/i,highest:/highest|höchste|beste/i,lowest:/lowest|niedrigste|schlechteste/i};
+  if(!patterns[mode])throw new UsageError('sort must be newest|relevant|highest|lowest|default');return patterns[mode];
+}
+export async function applySort(page,mode,{wait=sleep,signal}={}) {
+  if(!mode||mode==='default')return true;
+  const pattern=sortPattern(mode);
+  for(let attempt=0;attempt<2;attempt++){
+    throwIfAborted(signal);
+    try{
+      await page.locator(SELECTORS.sortButton).first().click({timeout:5000});
+      const option=page.locator('[role="menuitemradio"]').filter({hasText:pattern}).first();
+      const alreadyChecked=await option.getAttribute('aria-checked',{timeout:1000}).then(v=>v==='true').catch(()=>false);
+      await option.click({timeout:5000});
+      const liveText=await page.evaluate(()=>[...document.querySelectorAll('[aria-live]')].map(n=>n.textContent??'').join(' ')).catch(()=>'');
+      const verified=alreadyChecked
+        ||await option.getAttribute('aria-checked',{timeout:1000}).then(v=>v==='true').catch(()=>false)
+        ||pattern.test(await page.locator(SELECTORS.sortButton).first().getAttribute('aria-label').catch(()=>''))
+        ||pattern.test(await page.locator(SELECTORS.sortButton).first().textContent().catch(()=>''))
+        ||pattern.test(liveText);
+      if(verified){
+        // Wait for card identity to settle after the control confirms the sort.
+        await page.waitForSelector(SELECTORS.card,{timeout:15000}).catch(()=>{});
+        let prior=null,stable=0;
+        for(let poll=0;poll<16;poll++){await wait(250,signal);const id=await page.locator(SELECTORS.card).first().getAttribute('data-review-id',{timeout:1000}).catch(()=>null);stable=id&&id===prior?stable+1:0;prior=id;if(stable>=2)return true;}
+        if(await page.locator(SELECTORS.card).count())return true;
+      }
+    }catch(error){throwIfAborted(signal);}
   }
-
-  if (norm.shortLink) {
-    await page.waitForURL(/maps\/place|maps\/search/, { timeout: 30_000 }).catch(() => { });
-  }
-
-  const finalUrl = page.url();
-  if (/\/sorry\/|unusual traffic|recaptcha/i.test(finalUrl)) {
-    termination = { reason: 'blocked', detail: `challenge wall observed: ${finalUrl}` };
-  }
-
-  // Sign-in wall anywhere in this session must be classified, never bypassed.
-  const signinHit = async () => /accounts\.google\.[a-z.]+\/(v3\/|signin|ServiceLogin)/i.test(page.url());
-
-  if (termination.reason === 'not-terminated' && /maps\/place|maps\/search/.test(finalUrl)) {
-    place.url = finalUrl.split('?')[0] + `?hl=${cfg.hl}&gl=${cfg.gl}`;
-
-    const panelAppeared = await page
-      .waitForSelector(`${S.reviewsTab}, ${S.container}`, { timeout: 30_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    place.name = await pickPlaceName(page);
-    place.rating = await pickPlaceRating(page);
-
-    // Review count: Reviews tab label; fallback to the More-reviews button label.
-    const tabLabel = panelAppeared
-      ? await page.locator(S.reviewsTab).first().getAttribute('aria-label').catch(() => null)
-      : null;
-    const mc = /(\d[\d.,]*)\s*(?:R|r)eview/.exec(tabLabel ?? '');
-    place.reviewsCount = mc ? Number(mc[1].replace(/[.,\s]/g, '')) : null;
-    if (place.reviewsCount === null) {
-      const moreLabel = await page.locator(S.moreReviews).first().getAttribute('aria-label').catch(() => null);
-      const mm = /More reviews \(([\d,.]+)\)/.exec(moreLabel ?? '');
-      if (mm) place.reviewsCount = Number(mm[1].replace(/[,.]/g, ''));
-    }
-
-    // Stable place key from the !1s URI fragment (survives re-collections).
-    const dec = safeDecode(finalUrl);
-    place.placeId = /!1s([A-Za-z0-9%]+:0x[0-9a-f]+)/i.exec(dec)?.[1]
-      ?? /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i.exec(finalUrl)?.[1]
-      ?? /!1s([A-Za-z0-9:_-]+)/.exec(dec)?.[1]
-      ?? /(0x[0-9a-f]+:0x[0-9a-f]+)/i.exec(finalUrl)?.[1]
-      ?? null;
-
-    if (!place.placeId) {
-      termination = {
-        reason: 'missing-place-id',
-        detail: `unable to resolve stable place ID from URL: ${finalUrl}`,
-      };
-    } else if (cfg.incremental && cfg.isPlaceCollected?.(place.placeId)) {
-      termination = {
-        reason: 'skipped-incremental',
-        detail: `business ${place.placeId} already collected recently`,
-      };
-    }
-
-    if (termination.reason === 'not-terminated') {
-      if (place.reviewsCount) {
-        const opened = await ensureFeed(page);
-        if (!opened && !panelAppeared) { /* classification below */ }
-      } else if (!panelAppeared && (await page.locator(S.container).count()) === 0) {
-        const body = clean((await page.locator('body').textContent())?.slice(0, 500));
-        termination = {
-          reason: /no review/i.test(body ?? '') ? 'no-reviews' : 'structure-unknown',
-          detail: body?.slice(0, 160),
-        };
-      }
-    }
-
-    // Sort via the public sort button when requested (requires the full tabs view);
-    // for the signed-in full view Google rewrites the URL segment.
-    if (termination.reason === 'not-terminated' && input.sortMode && input.sortMode !== 'default') {
-      const sb = page.locator(S.sortButton).first();
-      try { await sb.click({ timeout: 10_000 }); await sleep(500); } catch { onProgress('sort-failed', { mode: input.sortMode }); }
-      const opt = page.locator('[role="menuitemradio"]').filter({ hasText: sortPattern(input.sortMode) }).first();
-      await opt.click({ timeout: 10_000 }).catch(() => onProgress('sort-missing', { mode: input.sortMode }));
-      await sleep(1200);
-      if (await signinHit()) termination = { reason: 'sign-in-required', detail: 'sort view redirected to Google sign-in' };
-    }
-  }
-
-  const deadline = startedAt + placeTimeoutMs(cfg);
-  let surfaceStalls = 0;
-  let loadRetries = 0;
-  while (termination.reason === 'not-terminated' && Date.now() < deadline) {
-    if (await signinHit()) {
-      termination = {
-        reason: 'sign-in-required',
-        detail: 'anonymous feeds are capped by Google; sign in a local profile with `gmaps-reviews login` to collect more',
-      };
-      break;
-    }
-    // Feed re-renders transiently clear cards; always sample a settled list.
-    if ((await page.locator(S.container).count()) === 0) {
-      const appeared = await ensureFeed(page, { quick: true });
-      if (!appeared) {
-        termination = { reason: collected.length ? 'pagination-stall' : 'structure-unknown', detail: 'review feed failed to (re)render' };
-        break;
-      }
-    }
-
-    // Expand truncated review bodies ("See more") before reading text.
-    const mores = page.locator(S.moreText);
-    const nExpand = Math.min(await mores.count(), cfg.expandBatch);
-    for (let i = 0; i < nExpand; i++) {
-      try { await mores.nth(i).click({ timeout: 1500 }); diag.expandClicks++; await sleep(60); }
-      catch { diag.staleElements++; }
-    }
-
-    let fresh = 0;
-    const batchRecs = [];
-    const cards = page.locator(S.container);
-    const cCount = await cards.count();
-    for (let i = 0; i < cCount; i++) {
-      let card;
-      try { card = await cards.nth(i).elementHandle({ timeout: 3000 }); } catch { diag.staleElements++; continue; }
-      if (!card) { diag.staleElements++; continue; }
-      try {
-        const raw = await card.evaluate(extractInPage);
-        const rec = finalizeRecord(raw, cfg, place);
-        if (!rec) continue;
-        if (seen.has(rec.reviewId)) { duplicates++; continue; }
-        seen.add(rec.reviewId);
-        collected.push(rec);
-        batchRecs.push(rec);
-        fresh++;
-      } catch (err) {
-        diag.staleElements++;
-        if (diag.pageErrors.length < cfg.maxDiagErrors) diag.pageErrors.push(String(err).slice(0, 300));
-      }
-    }
-    if (batchRecs.length > 0) {
-      onProgress('stream-batch', { place, reviews: batchRecs });
-    }
-    onProgress('page-batch', { fresh, total: collected.length, duplicates });
-
-    if (input.maxReviews && collected.length >= input.maxReviews) {
-      collected.length = input.maxReviews; // Truncate strictly to requested limit
-      termination = { reason: 'limit-reached', detail: `maxReviews=${input.maxReviews}` };
-      break;
-    }
-
-    // Dismiss any blocking promo modal if present
-    try {
-      const promo = page.locator('div[role="dialog"]').filter({ hasText: /Sign-in to get the best/i }).first();
-      if ((await promo.count()) > 0) {
-        await promo.getByRole('button', { name: 'Dismiss', exact: true }).first().click({ timeout: 2000 }).catch(() => {});
-        diag.consentScreens++;
-        await sleep(400);
-      }
-    } catch { /* not fatal */ }
-
-    // Check if Google is enforcing anonymous limited view
-    const isLimitedView = await page.evaluate(() => {
-      const text = document.body.innerText || '';
-      return text.includes("You're seeing a limited view of Google Maps");
-    });
-
-    if (isLimitedView && fresh === 0 && collected.length > 0) {
-      termination = {
-        reason: 'anonymous-preview-limit',
-        detail: `Reached Google Maps anonymous preview limit (${collected.length} reviews). Run \`gmr login\` with a persistent profile to extract full review history.`,
-      };
-      break;
-    }
-
-    // Target the review scroll container directly
-    await page.evaluate(() => {
-      const card = document.querySelector('div[data-review-id]');
-      if (!card) return;
-      const scroller = card.closest('div.m6QErb.DxyBCb') || card.closest('div[role="feed"]') || card.parentElement?.parentElement;
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    });
-
-    // Also scroll last card into view and trigger wheel interaction
-    if (cCount > 0) {
-      const lastCard = cards.last();
-      await lastCard.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
-      await lastCard.hover({ timeout: 1500 }).catch(() => {});
-      await page.mouse.wheel(0, 3000).catch(() => {});
-    }
-
-    // Adaptive idle: faster when reviews are loading, slower when approaching stall
-    const adaptiveIdle = fresh > 5 ? cfg.scrollIdleMs * 0.6
-      : fresh > 0 ? cfg.scrollIdleMs
-      : cfg.scrollIdleMs * 1.5;
-    await sleep(adaptiveIdle + Math.floor(Math.random() * 600));
-
-    // Mid-scrape block and captcha detection
-    const currentUrl = page.url();
-    const pageClass = classifyPage(currentUrl);
-    if (pageClass === 'blocked' || pageClass === 'captcha') {
-      termination = { reason: 'blocked', detail: `mid-scrape ${pageClass} at ${currentUrl}` };
-      break;
-    }
-
-    if (fresh > 0) {
-      surfaceStalls = 0;
-    } else {
-      surfaceStalls++;
-      // Stall recovery: re-engage the feed on consecutive stall
-      if (surfaceStalls === 2) {
-        const tab = page.locator(S.reviewsTab).first();
-        if ((await tab.count()) > 0) {
-          await tab.click({ timeout: 4000 }).catch(() => {});
-          await sleep(1500);
-        }
-      }
-      // Attempt to click "See more reviews" button if present at bottom
-      const seeMoreBtn = page.getByRole('button', { name: /see more reviews/i }).or(page.locator('button:has-text("See more reviews")')).first();
-      if ((await seeMoreBtn.count()) > 0) {
-        diag.moreClicks++;
-        await seeMoreBtn.click({ timeout: 4000 }).catch(() => {});
-        await sleep(1500);
-      }
-      if (surfaceStalls >= 3) {
-        if (isLimitedView) {
-          termination = {
-            reason: 'anonymous-preview-limit',
-            detail: `Reached Google Maps anonymous preview limit (${collected.length} reviews). Run \`gmr login\` with a persistent profile to extract full review history.`,
-          };
-        } else {
-          termination = {
-            reason: collected.length ? 'no-more-reviews' : 'no-reviews-found',
-            detail: 'no further loading observed after consecutive scroll passes',
-          };
-        }
-        break;
-      }
-    }
-  }
-  if (termination.reason === 'not-terminated') {
-    termination = { reason: collected.length ? 'timeout' : 'no-reviews-found', detail: 'placeTimeoutMs exceeded' };
-  }
-
-  await page.close().catch(() => { });
-  const totalSeen = collected.length + duplicates;
-  return {
-    place,
-    reviews: collected,
-    termination: {
-      ...termination,
-      collectedCount: collected.length,
-      duplicates,
-      duplicateRate: totalSeen ? Number((duplicates / totalSeen).toFixed(3)) : 0,
-      durationMs: Date.now() - startedAt,
-    },
-    diagnostics: diag,
+  return false;
+}
+async function handleConsent(page,cfg,diag) {
+  const state=await page.evaluate(readSurfaceInPage,{selectors:SELECTORS});
+  if(classifyPage(page.url(),{text:state.body,consentForm:state.consentForm})!=='consent-wall')return true;
+  diag.consentScreens++;
+  const reject=page.getByRole('button',{name:/^(Reject all|Alle ablehnen)$/i});
+  const accept=page.getByRole('button',{name:/^(Accept all|Alle akzeptieren|I agree|Ich stimme zu)$/i});
+  try{if(await reject.count())await reject.first().click({timeout:10000});else await accept.first().click({timeout:10000});
+    await page.waitForURL(url=>url.hostname!=='consent.google.com',{timeout:10000});return true;
+  }catch{throwIfAborted(cfg.signal);return false;}
+}
+async function resolveSearch(page) {
+  if(!/\/maps\/search\//.test(page.url()))return true;
+  // A search may already display a single place panel.
+  if(await page.locator(SELECTORS.reviewsTab).count())return true;
+  if(/\/maps\/place\//.test(page.url()))return true;
+  await page.waitForSelector('a[href*="/maps/place/"],div[role="feed"] a',{timeout:15000}).catch(()=>{});
+  if(/\/maps\/place\//.test(page.url()))return true;
+  let query='';try{query=decodeURIComponent(new URL(page.url()).pathname.split('/maps/search/')[1]?.split('/')[0]??'').replace(/\+/g,' ');}catch{}
+  const tokens=query.toLowerCase().split(/\s+/).filter(Boolean);
+  const links=await page.evaluate(()=>[...document.querySelectorAll('a[href*="/maps/place/"]')].slice(0,25).map((node,idx)=>({idx,name:node.getAttribute('aria-label')??node.textContent??'',sponsored:!!node.closest('[aria-label*="Sponsored" i],[aria-label*="Gesponsert" i]')})));
+  const ranked=links.map(link=>({...link,score:link.sponsored?-1:tokens.filter(t=>link.name.toLowerCase().includes(t)).length})).sort((a,b)=>b.score-a.score);
+  if(!ranked[0]||ranked[0].score<Math.max(1,Math.floor(tokens.length*.4)))return /\/maps\/place\//.test(page.url());
+  await page.locator('a[href*="/maps/place/"]').nth(ranked[0].idx).click({timeout:10000});
+  await page.waitForURL(/\/maps\/place\//,{timeout:15000}).catch(()=>{});return /\/maps\/place\//.test(page.url());
+}
+async function resolveFeatureId(page,cfg) {
+  const end=cfg.now()+cfg.placeIdWaitMs;
+  do{throwIfAborted(cfg.signal);const id=extractPlaceId(page.url());if(id)return id;
+    const hrefs=await page.evaluate(()=>[...document.querySelectorAll('a[href*="!1s"],a[href*="%211s"]')].map(n=>n.href));
+    for(const href of hrefs){const id=extractPlaceId(href);if(id)return id;}
+    if(cfg.now()>=end)break;await cfg.wait(250,cfg.signal);
+  }while(cfg.now()<end);
+  return null;
+}
+export async function captureDiagnostics(page,{jobId='unassigned',idx=0,reason,diagnosticsDir=path.join(PROJECT_ROOT,'data','diagnostics')}={}) {
+  const safe=s=>String(s).replace(/[^A-Za-z0-9_-]/g,'_');const directory=path.join(diagnosticsDir,safe(jobId));await fs.mkdir(directory,{recursive:true});
+  const base=path.join(directory,`${idx}-${safe(reason)}`),artifacts={};
+  const host=new URL(page.url()).hostname;
+  if(host==='accounts.google.com')return {omitted:'Authentication page content omitted'};
+  try{await page.screenshot({path:base+'.png',mask:[page.locator('input,form[action*="signin"],a[aria-label*="Google Account" i],a[aria-label*="Google-Konto" i]')]});artifacts.screenshot=base+'.png';}catch(error){artifacts.screenshotError=redact(error.message);}
+  try{const html=await page.evaluate(()=>{const root=document.documentElement.cloneNode(true);for(const node of root.querySelectorAll('script,style,input,textarea,form,a[aria-label*="Google Account" i],a[aria-label*="Google-Konto" i]'))node.remove();for(const node of root.querySelectorAll('*'))for(const attr of [...node.attributes])if(/token|secret|password|authorization|cookie|^on/i.test(attr.name))node.removeAttribute(attr.name);return root.outerHTML;});await fs.writeFile(base+'.html',Buffer.from(redact(html)).subarray(0,262144));artifacts.html=base+'.html';}catch(error){artifacts.htmlError=redact(error.message);}
+  return artifacts;
+}
+export function finalizeRecord(raw,cfg={},place={}) {
+  if(!raw?.reviewId)return null;
+  const reviewUrl=place.placeId?`https://www.google.com/maps/place/?data=!1s${encodeURIComponent(place.placeId)}!8s${encodeURIComponent(raw.reviewId)}&hl=${cfg.hl??'en'}&gl=${cfg.gl??'us'}`:null;
+  return normalizeReview({...raw,reviewUrl},{placeId:place.placeId,now:cfg.now?.()??Date.now()}).record;
+}
+export async function scrapePlaceReviews(page,input,onProgress=async()=>{}) {
+  const overrides=input.overrides??{},cfg={...DEFAULTS,...overrides,...input.language,signal:input.signal??overrides.signal,now:overrides.now??Date.now,wait:overrides.sleep??sleep};
+  cfg.stallTimeoutMs=overrides.stallTimeoutSec!=null?overrides.stallTimeoutSec*1000:cfg.stallTimeoutMs;
+  cfg.hardTimeoutMs=overrides.placeTimeoutMin!=null?overrides.placeTimeoutMin*60000:cfg.hardTimeoutMs;
+  const started=cfg.now(),seen=new Set(),reviews=[],diag={moreClicks:0,expandClicks:0,consentScreens:0,staleElements:0,pageErrors:[],fieldCoverage:{},authState:cfg.authState??'unknown',sortApplied:null};
+  const place={placeId:null,name:null,reviewsCount:null,rating:null,url:null};
+  let reason='continue',detail=null,surface,lastProgress=started,recoveryDone=false,endMarkerSeen=false;
+  const pageError=error=>{if(diag.pageErrors.length<cfg.maxDiagErrors)diag.pageErrors.push(redact(error.message));};page.on?.('pageerror',pageError);
+  const end=async()=>{
+    const termination={reason,detail,authState:diag.authState,sortApplied:diag.sortApplied,endMarkerSeen,collectedCount:reviews.length,expected:place.reviewsCount,completeness:place.reviewsCount>0?Math.min(1,reviews.length/place.reviewsCount):null,durationMs:cfg.now()-started};
+    itemStatusFor(reason,{collected:reviews.length});
+    if(!['limit-reached','no-more-reviews','no-reviews','skipped-incremental'].includes(reason))diag.artifacts=await captureDiagnostics(page,{...cfg,reason});
+    return {place,reviews,termination,diagnostics:diag};
   };
-}
-
-function placeTimeoutMs(cfg) { return cfg.placeTimeoutMs ?? DEFAULTS.placeTimeoutMs; }
-
-/** From a maps/search listing, click the result that best matches the search query
- *  (sponsored ads rank out unless their headline matches the query). */
-async function resolvePlaceFromSearch(page) {
-  const q = (/\/maps\/search\/([^/@?]+)/.exec(safeDecode(page.url()))?.[1] ?? '').replace(/\+/g, ' ');
-  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return false;
-
-  const info = await page.evaluate(({ sel }) =>
-    [...document.querySelectorAll(sel)].slice(0, 25).map((a, idx) => {
-      const card = a.closest('div[role="feed"], div[data-result-rank], div') ?? a.parentElement;
-      const head = (card?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
-      const sponsoredAria = !!a.closest('[aria-label*="Sponsored" i]')
-        || !!card?.querySelector('[aria-label*="Sponsored" i]');
-      return { idx, head, sponsoredAria };
-    }), { sel: 'a[href*="/maps/place/"]' });
-
-  // Rank: query token match on the headline (most matching tokens = best), ads penalized.
-  let bestIdx = -1;
-  let bestScore = 0; // Must be strictly positive
-  for (const { idx, head, sponsoredAria } of info) {
-    const h = head.toLowerCase().replace(/^sponsored\s*/i, '');
-    let matched = 0;
-    for (const tok of tokens) {
-      if (h.includes(tok)) matched++;
+  try{
+    throwIfAborted(cfg.signal);
+    const normalized=normalizePlaceUrl(input.url,cfg);await page.goto(normalized.canonical??normalized.searchUrl??normalized.shortLink,{waitUntil:'domcontentloaded',timeout:cfg.networkTimeoutMs});
+    if(!await handleConsent(page,cfg,diag)){reason='consent-wall';return await end();}
+    surface=await page.evaluate(readSurfaceInPage,{selectors:SELECTORS});
+    let health=classifyPage(page.url(),{text:surface.body,recaptchaIframe:surface.recaptchaIframe});
+    if(health!=='ok'){reason=health;return await end();}
+    if(!await resolveSearch(page)){reason='search-mismatch';return await end();}
+    await page.waitForSelector(`h1,${SELECTORS.reviewsTab},${SELECTORS.card}`,{timeout:15000}).catch(()=>{});
+    place.placeId=await resolveFeatureId(page,cfg);place.url=page.url();
+    if(!place.placeId){reason='missing-place-id';return await end();}
+    surface=await page.evaluate(readSurfaceInPage,{selectors:SELECTORS});place.name=surface.name;place.reviewsCount=surface.expected;place.rating=await page.evaluate(pickPlaceRatingInPage,{selectors:SELECTORS});
+    if(cfg.incremental&&cfg.isPlaceCollected?.(place.placeId)){reason='skipped-incremental';return await end();}
+    if(surface.noReviewsDetected){reason='no-reviews';return await end();}
+    const tab=page.locator(SELECTORS.reviewsTab).first();
+    if(await tab.count()){await tab.click({timeout:10000});await page.waitForSelector(SELECTORS.card,{timeout:10000}).catch(()=>{});}
+    else if(!await page.locator(SELECTORS.card).count()){
+      const more=page.locator(SELECTORS.moreReviews).first();if(await more.count()){await more.click({timeout:10000});await page.waitForSelector(SELECTORS.card,{timeout:10000}).catch(()=>{});}
     }
-    let score = matched;
-    if (h.startsWith(tokens[0])) score += 1;
-    if (sponsoredAria) score -= 50;
-    if (score > bestScore) { bestScore = score; bestIdx = idx; }
-  }
-
-  // Require matching at least 1 token (or half the tokens for long queries)
-  const minRequired = Math.max(1, Math.floor(tokens.length * 0.4));
-  if (bestIdx === -1 || bestScore < minRequired) return false;
-
-  const best = info[bestIdx];
-  if (!best) return false;
-  const link = page.locator('a[href*="/maps/place/"]').nth(best.idx);
-  try { await link.click({ timeout: 10_000 }); } catch { return false; }
-  await page.waitForURL(/\/maps\/place\//, { timeout: 30_000 }).catch(() => { });
-  return /\/maps\/place\//.test(page.url());
-}
-
-function sortPattern(mode) {
-  const map = { newest: /newest/i, highest: /highest/i, lowest: /lowest/i, 'most relevant': /relevant/i };
-  return map[mode] ?? /newest/i;
-}
-
-function safeDecode(u) {
-  try { return decodeURIComponent(u); } catch { return u; }
-}
-
-/** Business name: prefer an h1 matching the URL slug; skip Results/Sponsored h1s. */
-async function pickPlaceName(page) {
-  const slug = (/\/maps\/place\/([^/@?]+)/.exec(safeDecode(page.url()))?.[1] ?? '').replace(/\+/g, ' ');
-  let best = null;
-  const h1s = page.locator('h1');
-  const n = Math.min(await h1s.count(), 15);
-  for (let i = 0; i < n; i++) {
-    const t = clean(await h1s.nth(i).textContent().catch(() => null));
-    if (!t || /^(Results|Sponsored)$/i.test(t)) continue;
-    best = best ?? t;
-    if (slug && t.toLowerCase() === slug.toLowerCase()) { best = t; break; }
-  }
-  return best;
-}
-
-/**
- * Render a reviews feed. Strategies: already-mounted cards (typical), Reviews
- * tab click (transient clear), then panel scroll. quick=true only checks
- * currently-mounted cards. Dismisses the transient "Sign-in to get the best"
- * promo if it is covering the page (public UI dismiss affordance).
- */
-async function ensureFeed(page, { quick = false } = {}) {
-  const mounted = async () => (await page.locator(S.container).count()) > 0;
-  if (await mounted()) return true;
-  if (quick) return false;
-
-  // Promo dismiss (if present) — it covers the panel and swallows clicks.
-  try {
-    const promo = page.locator('div[role="dialog"]').filter({ hasText: 'Sign-in to get the best of Google Maps' }).first();
-    if ((await promo.count()) > 0) {
-      await promo.getByText('Dismiss', { exact: true }).first().click({ timeout: 3000 }).catch(() => { });
-      await sleep(600);
+    health=classifyPage(page.url());
+    if(health!=='ok'){reason=health==='sign-in-wall'&&diag.authState==='anonymous'?'sign-in-required':health;return await end();}
+    // A requested sort needs mounted cards; some places only mount the first cards once the feed is
+    // scrolled, so scroll-and-recheck before giving up — never click Sort against an empty panel.
+    if(input.sortMode&&input.sortMode!=='default'&&!await page.locator(SELECTORS.card).count()){
+      let cardLoaded=false;
+      for(let i=0;i<3&&!cardLoaded;i++){
+        cardLoaded=!!await page.waitForSelector(SELECTORS.card,{timeout:8000}).catch(()=>null);
+        if(!cardLoaded){await page.evaluate(scrollInPage,{selectors:SELECTORS});await page.mouse.wheel(0,2500);await cfg.wait(cfg.scrollIdleMs,cfg.signal);}
+      }
+      if(!cardLoaded){
+        surface=await page.evaluate(readSurfaceInPage,{selectors:SELECTORS});
+        reason=surface.noReviewsDetected?'no-reviews':'pagination-stall';detail='No review cards loaded after clicking the Reviews tab';
+      }
     }
-  } catch { /* not fatal */ }
-  if (await mounted()) return true;
-
-  const tab = page.locator(S.reviewsTab).first();
-  if ((await tab.count()) > 0) {
-    try {
-      await tab.click({ timeout: 15_000 });
-      if (await page.waitForSelector(S.container, { timeout: 8_000 }).then(() => true).catch(() => false)) return true;
-    } catch { /* fall through */ }
-  }
-  try {
-    await page.evaluate(() => {
-      const scrollers = [...document.querySelectorAll('div,section')].filter(
-        (d) => d.scrollHeight > d.clientHeight + 200 && d.clientHeight > 300,
-      );
-      for (const s of scrollers.slice(0, 5)) s.scrollTop = 600;
-    });
-    if (await page.waitForSelector(S.container, { timeout: 10_000 }).then(() => true).catch(() => false)) return true;
-  } catch { /* fall through */ }
-  return await mounted();
-}
-
-/** Dates may render as "Edited 3 months ago"; raw stays verbatim, parsing ignores the prefix. */
-function stripEdited(s) {
-  return s ? String(s).replace(/^edited\s+/i, '') : s;
-}
-
-/** Turn the raw in-page record into the canonical schema (dates parsed, nulls preserved). */
-function finalizeRecord(raw, cfg, place) {
-  if (!raw?.reviewId) return null;
-  const when = prsToDate(stripEdited(raw.publishedDateRaw), Date.now(), null);
-  const respWhen = prsToDate(stripEdited(raw.ownerResponseDateRaw), Date.now(), null);
-  const reviewUrl = place.placeId
-    ? `https://www.google.com/maps/place/?data=!1s${encodeURIComponent(place.placeId)}!8s${encodeURIComponent(String(raw.reviewId))}&hl=${cfg.hl}&gl=${cfg.gl}`
-    : null;
-  return {
-    reviewId: String(raw.reviewId),
-    reviewerName: raw.reviewerName ?? null,
-    reviewerProfileUrl: raw.reviewerProfileUrl ?? null,
-    rating: raw.rating ?? null,
-    ratingRaw: raw.ratingRaw ?? null,
-    reviewText: raw.reviewText ?? null,
-    originalLanguage: raw.originalLanguage ?? null,
-    translatedByGoogle: raw.translatedByGoogle ?? null,
-    publishedDateRaw: raw.publishedDateRaw ?? null,
-    publishedDateParsed: when?.iso ?? null,
-    datePrecision: when?.precision ?? null,
-    ownerResponse: raw.ownerResponse ?? null,
-    ownerResponseDateRaw: raw.ownerResponseDateRaw ?? null,
-    ownerResponseDateParsed: respWhen?.iso ?? null,
-    ownerResponseDatePrecision: respWhen?.precision ?? null,
-    reviewUrl: reviewUrl ?? null,
-    collectedAt: new Date().toISOString(),
-  };
+    if(reason==='continue'){
+      if(!await applySort(page,input.sortMode,{wait:cfg.wait,signal:cfg.signal})){
+        reason=classifyPage(page.url())==='sign-in-wall'&&diag.authState==='anonymous'?'sign-in-required':'sort-failed';detail='Requested sort could not be verified after two attempts';return await end();
+      }
+      diag.sortApplied=input.sortMode??'default';
+    }
+    while(reason==='continue'){
+      throwIfAborted(cfg.signal);surface=await page.evaluate(readSurfaceInPage,{selectors:SELECTORS});
+      health=classifyPage(page.url(),{text:surface.body,recaptchaIframe:surface.recaptchaIframe,consentForm:surface.consentForm});
+      if(health!=='ok'){reason=health==='sign-in-wall'&&diag.authState==='anonymous'?'sign-in-required':health;break;}
+      if(surface.expected!=null)place.reviewsCount=surface.expected;
+      for(let pass=0;pass<cfg.expansionPasses;pass++){const clicks=await page.evaluate(expandInPage,{selectors:SELECTORS});diag.expandClicks+=clicks;if(!clicks)break;await cfg.wait(cfg.expansionWaitMs,cfg.signal);}
+      const batch=await page.evaluate(extractInPage,{selectors:SELECTORS,seenIds:[...seen],maxRecords:input.maxReviews==null?null:Math.max(0,input.maxReviews-reviews.length)});
+      diag.fieldCoverage=batch.fieldCoverage;
+      const failing=Object.entries(batch.fieldCoverage).find(([,coverage])=>coverage!=null&&coverage<.9);
+      if(failing){reason='structure-drift';detail=`${failing[0]} coverage ${Math.round(failing[1]*100)}%; strategies: ${JSON.stringify(SELECTORS[failing[0]]??SELECTORS.card)}`;break;}
+      const fresh=[];
+      for(const raw of batch.reviews){const rec=finalizeRecord(raw,cfg,place);if(!rec||seen.has(rec.reviewId))continue;seen.add(rec.reviewId);rec.feedRank=reviews.length+1;reviews.push(rec);fresh.push(rec);}
+      if(fresh.length){lastProgress=cfg.now();recoveryDone=false;await onProgress('stream-batch',{place,reviews:fresh});}
+      await onProgress('page-batch',{fresh:fresh.length,total:reviews.length});
+      endMarkerSeen=surface.endMarkerSeen;
+      reason=decideTermination({collected:reviews.length,expected:place.reviewsCount,limit:input.maxReviews,authState:diag.authState,endMarkerSeen,noReviewsDetected:surface.noReviewsDetected,minCompleteness:cfg.minCompleteness??.9,elapsedMs:cfg.now()-started,hardTimeoutMs:cfg.hardTimeoutMs,stalled:!fresh.length,stalledForMs:cfg.now()-lastProgress,stallTimeoutMs:cfg.stallTimeoutMs,recoveryDone,spinnerVisible:surface.spinnerVisible});
+      if(reason!=='continue')break;
+      if(!fresh.length&&!recoveryDone&&cfg.now()-lastProgress>=Math.min(10000,cfg.stallTimeoutMs/2)){
+        if(await tab.count())await tab.click({timeout:3000}).catch(()=>{});
+        await page.evaluate(scrollInPage,{selectors:SELECTORS,up:true});await cfg.wait(cfg.scrollIdleMs,cfg.signal);recoveryDone=true;
+      }
+      await page.evaluate(scrollInPage,{selectors:SELECTORS});await page.mouse.wheel(0,2500);await cfg.wait(cfg.scrollIdleMs,cfg.signal);
+    }
+    if(['limit-reached','no-more-reviews'].includes(reason)&&reviews.some(r=>r.textTruncated)){reason='incomplete';detail='Review or owner-response text remains truncated';}
+    if(!reviews.length&&['pagination-stall','anonymous-preview-limit'].includes(reason)){
+      if(diag.authState==='anonymous'&&place.placeId){
+        reason='anonymous-preview-limit';detail='Anonymous preview limited review access; zero cards mounted';
+      }else{
+        reason='structure-unknown';detail='No usable review cards appeared; zero reviews was not confirmed';
+      }
+    }
+    return await end();
+  }finally{page.off?.('pageerror',pageError);}
 }

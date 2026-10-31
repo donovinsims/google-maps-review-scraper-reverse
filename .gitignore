@@ -14,3 +14,11 @@ data/poc/*.png
 data/profiles/
 data/export/
 
+
+# Local observations and diagnostics
+data/poc/
+data/diagnostics/
+*.db-journal
+test-*.db*
+tests/fixtures/live/*
+!tests/fixtures/live/README.md

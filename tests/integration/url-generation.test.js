@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePlaceUrl } from '../../src/collector/place-reviews.js';
+import { normalizePlaceUrl, finalizeRecord } from '../../src/collector/place-reviews.js';
 
 test('normalizePlaceUrl formats search URLs and canonical URLs with hl and gl', () => {
   const norm1 = normalizePlaceUrl('https://www.google.com/maps/place/Tartine+Bakery/@37.761425,-122.424104,17z', { hl: 'en', gl: 'us' });
@@ -17,7 +17,7 @@ test('reviewUrl format conforms to Google Maps standard syntax', () => {
   const hl = 'en';
   const gl = 'us';
 
-  const reviewUrl = `https://www.google.com/maps/place/?data=!1s${encodeURIComponent(placeId)}!8s${encodeURIComponent(reviewId)}&hl=${hl}&gl=${gl}`;
+  const { reviewUrl } = finalizeRecord({reviewId}, {hl,gl}, {placeId});
   const parsed = new URL(reviewUrl);
   assert.equal(parsed.searchParams.get('hl'), 'en');
   assert.equal(parsed.searchParams.get('gl'), 'us');

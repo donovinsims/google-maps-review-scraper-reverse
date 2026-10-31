@@ -1,185 +1,95 @@
-// Batch collection: supports persistent profiles or anonymous contexts,
-// rebrowser-playwright CDP stealth, system Chrome, proxy rotation, and failure resilience.
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
-import { chromium } from 'rebrowser-playwright';
-import { scrapePlaceReviews, consentCookies } from './place-reviews.js';
-import { getProfileDir, hasSavedProfile, hasSystemChrome, parseProxy } from './browser.js';
-import { pickFingerprint, webglOverrideScript } from './stealth.js';
+import { chromium as defaultChromium } from 'rebrowser-playwright';
+import { scrapePlaceReviews as defaultScrape } from './place-reviews.js';
+import { getProfileDir, hasSavedProfile, launchWithFallback, detectAuthState } from './browser.js';
 import { withRetry } from '../core/retry.js';
+import { PROJECT_ROOT } from '../core/paths.js';
+import { extractPlaceId } from '../core/place-id.js';
+import { parseRunOptions, UsageError } from '../core/config.js';
+import { itemStatusFor } from '../core/termination.js';
+import { sleep, throwIfAborted, isAbort, closeWithTimeout } from '../core/cancel.js';
+import { redact } from '../core/redact.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-
-let browserChecked = false;
-export function ensureBrowserInstalled() {
-  if (browserChecked) return;
-  browserChecked = true;
+export function isTransient(error) {return error?.name==='TimeoutError'||/net::ERR_[A-Z_]+|\bERR_(CONNECTION|NETWORK|TIMED_OUT|NAME_NOT_RESOLVED)|Target (page, context or browser has been closed|closed)|Navigation.*timed out/i.test(String(error?.message));}
+export async function launchBatchCollector(inputs, options={}, onComplete=async()=>({}), onBatch=async()=>{}, deps={}) {
+  const config=parseRunOptions(options), signal=config.signal;
+  const sanitize=value=>redact(value,[config.proxyConfig?.username,config.proxyConfig?.password]);
+  const chromium=deps.chromium??defaultChromium,scrape=deps.scrapePlaceReviews??defaultScrape,wait=deps.sleep??sleep;
+  const profileExists=deps.hasSavedProfile??hasSavedProfile,projectRoot=deps.projectRoot??PROJECT_ROOT;
+  const items=inputs.map((v,idx)=>typeof v==='string'?{url:v,idx}:v),summary=[],remaining=[];
+  const complete=async(result,item,attempts,started)=>{
+    const base={listingUrl:item.url,idx:item.idx,placeId:result.place?.placeId??null,placeName:result.place?.name??null,status:itemStatusFor(result.termination.reason,{collected:result.reviews?.length??0}),collected:result.reviews?.length??0,expected:result.place?.reviewsCount??null,termination:result.termination,error:result.error??null,attempts,durationMs:Date.now()-started};
+    try {return {...base,...await onComplete(result,item.url,item.idx,attempts),attempts,durationMs:Date.now()-started};}
+    catch(error){return {...base,status:'failed',error:sanitize(error.message),termination:{reason:'failed',detail:'Completion callback failed: '+sanitize(error.message)}};}
+  };
+  for(const item of items){const placeId=extractPlaceId(item.url);if(config.incremental&&placeId&&config.isPlaceCollected?.(placeId))summary.push(await complete({place:{placeId},reviews:[],termination:{reason:'skipped-incremental',authState:'unknown'}},item,0,Date.now()));else remaining.push(item);}
+  if(!remaining.length||signal?.aborted)return summary;
+  const profileName=config.profile===false?null:typeof config.profile==='string'?config.profile:profileExists(projectRoot,'default')?'default':null;
+  const profileDir=profileName?getProfileDir(projectRoot,profileName):null;
+  let concurrency=config.concurrency;
+  if(profileDir&&concurrency>1&&!config.unsafeConcurrency){console.warn('Persistent profiles use concurrency 1; --unsafe-concurrency is required to override.');concurrency=1;}
+  let {resource,channel}=await launchWithFallback(chromium,profileDir,config);
+  console.log(`Browser: ${channel}; ${profileDir?'persistent profile '+profileName:'anonymous context'}`);
+  let browser=profileDir?null:resource,sharedContext=profileDir?resource:null;
+  const contexts=new Set();
+  let closing,closed=false,consecutiveBlocks=0,circuitOpen=false,position=0,schedule=Promise.resolve();
+  const closeAll=()=>{
+    if(closing)return closing;
+    closing=closeWithTimeout(async()=>{const results=await Promise.allSettled([...contexts].map(c=>c.close()));await resource.close();const failed=results.find(r=>r.status==='rejected');if(failed&&!signal?.aborted)throw failed.reason;closed=true;},10000);
+    return closing;
+  };
+  const onAbort=()=>{closeAll().catch(error=>console.error(sanitize(error.message)));};
+  signal?.addEventListener('abort',onAbort,{once:true});
+  async function takeNext(){const ticket=schedule.then(async()=>{
+    if(signal?.aborted||circuitOpen||position>=remaining.length)return null;
+    if(position>0){const [min,max]=config.delayMs;await wait(min+Math.floor(Math.random()*(max-min+1)),signal);}
+    if(signal?.aborted||circuitOpen)return null;return remaining[position++];
+  });schedule=ticket.catch(()=>{});return ticket;}
+  let authState='unknown';
   try {
-    execSync('npx playwright install chromium 2>/dev/null', {
-      stdio: 'pipe',
-      timeout: 120_000,
-    });
-  } catch {
-    // Already installed or network unavailable — proceed anyway
-  }
-}
-
-export async function launchBatchCollector(urls, config = {}, onComplete = async () => ({}), onBatch = async () => ({})) {
-  ensureBrowserInstalled();
-
-  const summary = [];
-  const concurrency = Math.min(Math.max(config.concurrency ?? 1, 1), 4);
-
-  let profileDir = null;
-  if (config.profile !== false) {
-    if (typeof config.profile === 'string' && config.profile.length > 0) {
-      profileDir = getProfileDir(PROJECT_ROOT, config.profile);
-    } else if (hasSavedProfile(PROJECT_ROOT, 'default')) {
-      profileDir = getProfileDir(PROJECT_ROOT, 'default');
-    }
-  }
-
-  const channel = (config.chrome !== false && hasSystemChrome()) ? 'chrome' : undefined;
-  const proxy = parseProxy(config.proxy);
-
-  const commonArgs = [
-    '--lang=en-US',
-    '--disable-blink-features=AutomationControlled',
-    '--no-first-run',
-    '--disable-dev-shm-usage',
-  ];
-
-  let browser = null;
-  let sharedContext = null;
-
-  if (profileDir) {
-    console.log(`Using persistent profile (${channel ?? 'chromium'}): ${path.relative(PROJECT_ROOT, profileDir)}`);
-    fs.mkdirSync(profileDir, { recursive: true });
-    const initialFp = pickFingerprint();
-    sharedContext = await chromium.launchPersistentContext(profileDir, {
-      headless: config.headless !== false,
-      channel,
-      proxy,
-      viewport: initialFp.viewport,
-      locale: initialFp.locale,
-      timezoneId: initialFp.timezoneId,
-      userAgent: initialFp.userAgent,
-      args: commonArgs,
-    });
-    await sharedContext.addInitScript(webglOverrideScript());
-    await sharedContext.addInitScript(() => {
-      try {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      } catch {}
-    });
-  } else {
-    browser = await chromium.launch({
-      headless: config.headless !== false,
-      channel,
-      proxy,
-      args: commonArgs,
-    });
-  }
-
-  const queue = urls.slice();
-  let i = 0;
-
-  async function workOne() {
-    while (queue.length) {
-      const listingUrl = queue.shift();
-      const n = ++i;
-      const started = Date.now();
-      const fp = pickFingerprint();
-
-      let context = sharedContext;
-      let ownContext = false;
-      if (!context) {
-        context = await browser.newContext({
-          viewport: fp.viewport,
-          locale: fp.locale,
-          timezoneId: fp.timezoneId,
-          userAgent: fp.userAgent,
-          proxy,
-        });
-        await context.addCookies(consentCookies());
-        await context.addInitScript(webglOverrideScript());
-        await context.addInitScript(() => {
-          try {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          } catch {}
-        });
-        ownContext = true;
-      }
-
-      const page = await context.newPage();
-      try {
-        console.log(`[${n}/${urls.length}] ${listingUrl}`);
-        const result = await withRetry(
-          async () => {
-            return await scrapePlaceReviews(page, {
-              url: listingUrl,
-              sortMode: config.sort === 'default' ? undefined : config.sort,
-              maxReviews: config.limit,
-              language: { hl: config.language?.split('-')[0] ?? 'en', gl: 'us' },
-              overrides: {
-                incremental: config.incremental,
-                isPlaceCollected: config.isPlaceCollected,
-              },
-            }, (event, data) => {
-              if (event === 'stream-batch' && onBatch) {
-                onBatch(data, listingUrl, n - 1).catch(() => {});
-              }
+    const probeContext=sharedContext??await browser.newContext({locale:config.language});
+    if(!sharedContext)contexts.add(probeContext);
+    try{authState=await (deps.detectAuthState??detectAuthState)(probeContext,{signal,language:config.language,region:config.region});}
+    finally{if(!sharedContext){await probeContext.close();contexts.delete(probeContext);}}
+    console.log(`Authentication: ${authState}`);if(authState==='anonymous')console.warn('ANONYMOUS: Google restricts unauthenticated access; reviews may be limited to a preview or entirely unavailable. Use gmr login for full collection.');
+    await config.onAuthState?.(authState);
+    if(config.requireLogin&&authState!=='signed-in')throw new UsageError('Signed-in Google Maps profile required. Run gmr login, then gmr doctor.');
+    async function work(){while(true){let item;try{item=await takeNext();}catch(error){if(isAbort(error,signal))return;throw error;}if(!item)return;
+      const started=Date.now();let context=sharedContext,page,result,attempts=0;
+      try{
+        result=await withRetry(async attempt=>{
+          attempts=attempt;throwIfAborted(signal);
+          if(!context){context=await browser.newContext({locale:config.language,viewport:{width:1400,height:960}});contexts.add(context);}
+          try{
+            page=await context.newPage();
+            return await scrape(page,{url:item.url,sortMode:config.sort,maxReviews:config.limit,language:{hl:config.language,gl:config.region},overrides:{...config,idx:item.idx,authState},signal},async(event,data)=>{
+              if(event==='stream-batch'){try{await onBatch(data,item.url,item.idx);}catch(error){error.persistenceError=true;throw error;}}
+              else if(['sort-failed','sort-missing'].includes(event))console.warn(sanitize(`${event}: ${JSON.stringify(data)}`));
             });
-          },
-          {
-            maxAttempts: 3,
-            baseDelayMs: 2000,
-            onRetry: ({ attempt, delay, error }) => {
-              console.log(`  Retry ${attempt}/3 after ${(delay / 1000).toFixed(1)}s (error: ${error.message || error})`);
-            },
-            retryableError: (err) => {
-              const msg = String(err?.message || err);
-              // Don't retry if user aborted or explicit sign-in wall
-              if (/sign-in-wall|abort/i.test(msg)) return false;
-              return true;
-            },
-          }
-        );
-        const done = await onComplete(result, listingUrl, n - 1);
-        summary.push({ ...done, durationMs: Date.now() - started });
-        console.log(`  collected=${done.collected} termination=${result.termination.reason}`);
-      } catch (err) {
-        console.error(`  FAILED: ${err?.message ?? err}`);
-        const failedItem = { listingUrl, error: String(err?.message ?? err), durationMs: Date.now() - started };
-        await onComplete({ place: null, reviews: [], termination: { reason: 'failed', detail: String(err?.message ?? err) } }, listingUrl, n - 1).catch(() => {});
-        summary.push(failedItem);
-      } finally {
-        await page.close().catch(() => {});
-        if (ownContext) {
-          await context.close().catch(() => {});
-        }
-      }
-    }
-  }
-
-  try {
-    await Promise.all(Array.from({ length: concurrency }, () => workOne()));
+          }catch(error){
+            if(isAbort(error,signal))throw error;
+            if(error.persistenceError||!isTransient(error))throw error;
+            if(/Target .*closed|has been closed/i.test(error.message)){
+              if(sharedContext){
+                await sharedContext.close().catch(()=>{});
+                const replacement=await launchWithFallback(chromium,profileDir,config);
+                resource=replacement.resource;sharedContext=resource;context=sharedContext;
+              }else{await context.close().catch(()=>{});contexts.delete(context);context=null;}
+            }
+            throw error;
+          }finally{if(page){await page.close().catch(()=>{});page=null;}}
+        },{maxAttempts:3,baseDelayMs:1000,signal,wait,retryableError:error=>!error.persistenceError&&isTransient(error),onRetry:({attempt,error})=>console.warn(sanitize(`Retry ${attempt}/3: ${error.message}`))});
+      }catch(error){result={place:null,reviews:[],error:sanitize(error.message),termination:{reason:isAbort(error,signal)?'interrupted':error.persistenceError?'persistence-error':'failed',detail:sanitize(error.message),authState}};}
+      finally{if(context&&!sharedContext){await context.close().catch(()=>{});contexts.delete(context);}}
+      result.termination={...result.termination,authState};
+      const done=await complete(result,item,attempts,started);summary.push(done);
+      consecutiveBlocks=['blocked','captcha'].includes(result.termination.reason)?consecutiveBlocks+1:0;
+      if(consecutiveBlocks>=2){circuitOpen=true;console.error('Two consecutive blocks: stopping; unstarted places remain pending.');}
+    }}
+    const settled=await Promise.allSettled(Array.from({length:concurrency},()=>work()));
+    for(const res of settled){if(res.status==='rejected'&&!isAbort(res.reason,signal))throw res.reason;}
+    return summary.sort((a,b)=>a.idx-b.idx);
   } finally {
-    const closeTimeout = setTimeout(() => {
-      console.error('Browser close timed out — force killing');
-      try {
-        browser?.process?.()?.kill('SIGKILL');
-      } catch {}
-    }, 10_000);
-    try {
-      if (sharedContext) await sharedContext.close().catch(() => {});
-      if (browser) await browser.close().catch(() => {});
-    } finally {
-      clearTimeout(closeTimeout);
-    }
+    signal?.removeEventListener('abort',onAbort);
+    if(!closed)await closeAll();
   }
-  return summary;
 }

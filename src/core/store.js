@@ -1,164 +1,77 @@
-// Store layer: all reads/writes to the local DB (businesses, reviews, jobs).
-import path from 'node:path';
 import { openDb } from './db.js';
+import { DEFAULT_DB } from './paths.js';
+import { redact } from './redact.js';
 
-export function createStore(dbPath) {
-  const db = openDb(dbPath ?? path.resolve(process.cwd(), 'data', 'gmaps-reviews.db'));
+const REVIEW_FIELDS = ['reviewId','placeId','reviewerName','reviewerProfileUrl','rating','ratingRaw','reviewText','originalLanguage','translatedByGoogle','publishedDateRaw','publishedDateParsed','publishedDateEarliest','publishedDateLatest','datePrecision','isEdited','ownerResponse','ownerResponseDateRaw','ownerResponseDateParsed','ownerResponseDateEarliest','ownerResponseDateLatest','ownerResponseDatePrecision','ownerResponseIsEdited','textTruncated','feedRank','reviewUrl','firstCollectedAt','lastCollectedAt','collectedCount','runId'];
+const countsFor = items => Object.fromEntries(['pending','running','done','skipped','partial','blocked','failed'].map(status => [status,items.filter(i => i.status === status).length]));
+const json = v => v == null ? null : JSON.stringify(redact(v));
+function parseItem(row) { return { ...row, termination: row.termination ? JSON.parse(row.termination) : null, diagnostics: row.diagnostics ? JSON.parse(row.diagnostics) : null }; }
 
+export function createStore(dbPath = DEFAULT_DB, { now = () => Date.now() } = {}) {
+  const db = openDb(dbPath); let closed = false;
+  const timestamp = () => new Date(now()).toISOString();
+  function transaction(fn) { db.exec('BEGIN IMMEDIATE'); try { const v=fn();db.exec('COMMIT');return v; } catch(e){db.exec('ROLLBACK');throw e;} }
   function upsertBusinessMeta(meta) {
     if (!meta?.placeId) return;
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO businesses (placeId, name, listingUrl, inputUrl, reviewsCount, rating, firstSeenAt, lastSeenAt)
-      VALUES (?,?,?,?,?,?,?,?)
-      ON CONFLICT(placeId) DO UPDATE SET
-        name = COALESCE(excluded.name, name),
-        listingUrl = COALESCE(excluded.listingUrl, listingUrl),
-        reviewsCount = COALESCE(excluded.reviewsCount, reviewsCount),
-        rating = COALESCE(excluded.rating, rating),
-        lastSeenAt = ?`).run(
-          meta.placeId, meta.name ?? null, meta.listingUrl ?? null, meta.inputUrl ?? null,
-          meta.reviewsCount ?? null, meta.rating ?? null, now, meta.lastSeenAt ?? now, now);
+    if (!meta.listingUrl) throw new Error('listingUrl is required for business metadata');
+    db.prepare(`INSERT INTO businesses(placeId,name,listingUrl,inputUrl,reviewsCount,rating,firstSeenAt,lastSeenAt) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(placeId) DO UPDATE SET name=COALESCE(excluded.name,name),listingUrl=excluded.listingUrl,inputUrl=COALESCE(excluded.inputUrl,inputUrl),reviewsCount=COALESCE(excluded.reviewsCount,reviewsCount),rating=COALESCE(excluded.rating,rating),lastSeenAt=excluded.lastSeenAt`)
+      .run(meta.placeId,meta.name??null,meta.listingUrl,meta.inputUrl??null,meta.reviewsCount??null,meta.rating??null,timestamp(),timestamp());
   }
-
   function upsertReview(rec, runId) {
-    if (!rec?.placeId || !rec?.reviewId) return false;
-    const now = new Date().toISOString();
-    const json = (v) => (v == null ? null : typeof v === 'object' ? JSON.stringify(v) : v);
-    db.prepare(`
-      INSERT INTO reviews (
-        reviewId, placeId, reviewerName, reviewerProfileUrl, rating, ratingRaw,
-        reviewText, originalLanguage, translatedByGoogle,
-        publishedDateRaw, publishedDateParsed, datePrecision,
-        ownerResponse, ownerResponseDateRaw, ownerResponseDateParsed, ownerResponseDatePrecision,
-        reviewUrl, firstCollectedAt, lastCollectedAt, collectedCount, runId)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(placeId, reviewId) DO UPDATE SET
-        reviewerName = COALESCE(excluded.reviewerName, reviewerName),
-        reviewerProfileUrl = COALESCE(excluded.reviewerProfileUrl, reviewerProfileUrl),
-        rating = COALESCE(excluded.rating, rating),
-        ratingRaw = COALESCE(excluded.ratingRaw, ratingRaw),
-        reviewText = CASE WHEN excluded.reviewText IS NOT NULL AND (reviewText IS NULL OR length(excluded.reviewText) > length(COALESCE(reviewText, ''))) THEN excluded.reviewText ELSE COALESCE(reviewText, excluded.reviewText) END,
-        originalLanguage = COALESCE(excluded.originalLanguage, originalLanguage),
-        translatedByGoogle = COALESCE(excluded.translatedByGoogle, translatedByGoogle),
-        publishedDateRaw = COALESCE(excluded.publishedDateRaw, publishedDateRaw),
-        publishedDateParsed = COALESCE(excluded.publishedDateParsed, publishedDateParsed),
-        datePrecision = COALESCE(excluded.datePrecision, datePrecision),ownerResponse = COALESCE(excluded.ownerResponse, ownerResponse),
-        ownerResponseDateRaw = COALESCE(excluded.ownerResponseDateRaw, ownerResponseDateRaw),
-        ownerResponseDateParsed = COALESCE(excluded.ownerResponseDateParsed, ownerResponseDateParsed),
-        ownerResponseDatePrecision = COALESCE(excluded.ownerResponseDatePrecision, ownerResponseDatePrecision),
-        reviewUrl = COALESCE(excluded.reviewUrl, reviewUrl),
-        lastCollectedAt = excluded.lastCollectedAt,
-        collectedCount = collectedCount + 1,
-        runId = excluded.runId`).run(
-          rec.reviewId, rec.placeId, rec.reviewerName ?? null, rec.reviewerProfileUrl ?? null,
-          rec.rating ?? null, rec.ratingRaw ?? null, rec.reviewText ?? null,
-          rec.originalLanguage ?? null, rec.translatedByGoogle ?? null,
-          json(rec.publishedDateRaw) ?? null, json(rec.publishedDateParsed) ?? null, json(rec.datePrecision) ?? null,
-          rec.ownerResponse ?? null, rec.ownerResponseDateRaw ?? null,
-          json(rec.ownerResponseDateParsed) ?? null, json(rec.ownerResponseDatePrecision) ?? null,
-          rec.reviewUrl ?? null, now, now, rec.collectedCount ?? 1, runId ?? null);
-    return true;
-  }
-
-  function upsertReviews(records, runId) {
-    if (!records || !records.length) return 0;
-    let count = 0;
-    db.exec('BEGIN');
-    try {
-      for (const rec of records) {
-        if (upsertReview(rec, runId)) count++;
+    if (!rec?.placeId || !rec.reviewId) throw new Error('placeId and reviewId are required');
+    const old = db.prepare('SELECT * FROM reviews WHERE placeId=? AND reviewId=?').get(rec.placeId,rec.reviewId);
+    const merged = { ...old }; const conflicts = [];
+    for (const field of REVIEW_FIELDS) if (rec[field] != null) merged[field] = typeof rec[field] === 'boolean' ? Number(rec[field]) : rec[field];
+    // A complete prior body must survive a partial observation, but complete edits can shorten it.
+    if (old?.reviewText != null && (!rec.reviewText || rec.textTruncated)) { merged.reviewText=old.reviewText;merged.textTruncated=old.textTruncated; }
+    for (const prefix of ['publishedDate','ownerResponseDate']) {
+      const lo=rec[prefix+'Earliest'],hi=rec[prefix+'Latest'];
+      if (!lo || !hi) continue;
+      let earliest=lo,latest=hi;
+      if (old?.[prefix+'Earliest'] && old?.[prefix+'Latest']) {
+        earliest=lo>old[prefix+'Earliest']?lo:old[prefix+'Earliest'];latest=hi<old[prefix+'Latest']?hi:old[prefix+'Latest'];
+        if(earliest>latest){ earliest=lo;latest=hi;conflicts.push(prefix); }
       }
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
+      merged[prefix+'Earliest']=earliest;merged[prefix+'Latest']=latest;
+      merged[prefix+'Parsed']=new Date((Date.parse(earliest)+Date.parse(latest))/2).toISOString();
     }
-    return count;
+    merged.firstCollectedAt=old?.firstCollectedAt??timestamp();merged.lastCollectedAt=timestamp();
+    merged.collectedCount=old?old.collectedCount+Number((old.runId??null)!==(runId??null)):1;merged.runId=runId??null;
+    const values=REVIEW_FIELDS.map(k=>merged[k]??null);
+    db.prepare(`INSERT INTO reviews (${REVIEW_FIELDS.join(',')}) VALUES (${REVIEW_FIELDS.map(()=>'?').join(',')}) ON CONFLICT(placeId,reviewId) DO UPDATE SET ${REVIEW_FIELDS.filter(k=>!['placeId','reviewId'].includes(k)).map(k=>`${k}=excluded.${k}`).join(',')}`).run(...values);
+    return { conflicts };
   }
-
-  function countReviews(placeId) {
-    if (placeId) return db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE placeId = ?').get(placeId).n;
-    return db.prepare('SELECT COUNT(*) AS n FROM reviews').get().n;
+  function upsertReviews(records, runId, { onConflict = () => {} } = {}) {
+    if(!records?.length)return 0;
+    return transaction(()=>{const conflicts=[];for(const r of records){const out=upsertReview(r,runId);for(const field of out.conflicts)conflicts.push({reviewId:r.reviewId,field});}for(const conflict of conflicts)onConflict(conflict);return records.length;});
   }
-
-  function selectReviews({ placeId } = {}) {
-    if (placeId) return db.prepare('SELECT * FROM reviews WHERE placeId = ? ORDER BY firstCollectedAt DESC').all(placeId);
-    return db.prepare('SELECT * FROM reviews ORDER BY firstCollectedAt DESC').all();
+  function countReviews(placeId) { return (placeId?db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE placeId=?').get(placeId):db.prepare('SELECT COUNT(*) AS n FROM reviews').get()).n; }
+  function selectReviews({placeId,limit,offset=0}={}) {
+    let sql='SELECT * FROM reviews';const args=[];if(placeId){sql+=' WHERE placeId=?';args.push(placeId);}sql+=' ORDER BY placeId, publishedDateParsed DESC, reviewId';
+    if(limit!=null){sql+=' LIMIT ? OFFSET ?';args.push(limit,offset);}return db.prepare(sql).all(...args);
   }
-
-  function selectPlaces() {
-    return db.prepare('SELECT * FROM businesses ORDER BY firstSeenAt DESC').all();
+  function selectPlaces(){return db.prepare('SELECT * FROM businesses ORDER BY firstSeenAt DESC,placeId').all();}
+  function deleteReviews(placeId){return transaction(()=>{db.prepare('DELETE FROM job_items WHERE placeId=?').run(placeId);db.prepare('DELETE FROM reviews WHERE placeId=?').run(placeId);db.prepare('DELETE FROM businesses WHERE placeId=?').run(placeId);});}
+  function retentionVacuum(days){db.prepare('DELETE FROM reviews WHERE lastCollectedAt < ?').run(new Date(now()-days*86400000).toISOString());db.exec('PRAGMA incremental_vacuum');return countReviews();}
+  function createJob({id,config={},totalPlaces=0,notes=null}){
+    transaction(()=>{db.prepare("INSERT INTO jobs(id,createdAt,updatedAt,status,config,totalPlaces,notes) VALUES(?,?,?,'running',?,?,?)").run(id,timestamp(),timestamp(),json(config),totalPlaces,redact(notes));
+      for(const [idx,inputUrl] of (config.listingUrls??[]).entries())recordJobItem({jobId:id,idx,inputUrl,status:'pending',attempt:0});});
   }
-
-  function deleteReviews(placeId) {
-    db.prepare('DELETE FROM reviews WHERE placeId = ?').run(placeId);
-    db.prepare('DELETE FROM businesses WHERE placeId = ?').run(placeId);
+  function updateJobStatus(id,status,notes=null){db.prepare('UPDATE jobs SET status=?,updatedAt=?,notes=COALESCE(?,notes) WHERE id=?').run(status,timestamp(),redact(notes),id);}
+  function updateJobConfig(id,config){db.prepare('UPDATE jobs SET config=?,updatedAt=? WHERE id=?').run(json(config),timestamp(),id);}
+  function recordJobItem({jobId,idx,inputUrl,placeId=null,status='pending',attempt=0,error=null,termination=null,diagnostics=null,expectedCount=null,collectedCount=null,completeness=null}){
+    inputUrl=redact(inputUrl);
+    const previous=db.prepare('SELECT inputUrl FROM job_items WHERE jobId=? AND idx=?').get(jobId,idx);
+    if(previous&&previous.inputUrl!==inputUrl)throw new Error(`inputUrl mismatch for job ${jobId} index ${idx}`);
+    db.prepare(`INSERT INTO job_items(jobId,idx,inputUrl,placeId,status,attempt,error,termination,diagnostics,expectedCount,collectedCount,completeness,updatedAt) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(jobId,idx) DO UPDATE SET placeId=COALESCE(excluded.placeId,placeId),status=excluded.status,attempt=excluded.attempt,error=excluded.error,termination=excluded.termination,diagnostics=excluded.diagnostics,expectedCount=excluded.expectedCount,collectedCount=excluded.collectedCount,completeness=excluded.completeness,updatedAt=excluded.updatedAt`)
+      .run(jobId,idx,inputUrl,placeId,status,attempt,redact(error),json(termination),json(diagnostics),expectedCount,collectedCount,completeness,timestamp());
   }
-
-  function retentionVacuum(olderThanDays) {
-    const cutoff = new Date(Date.now() - olderThanDays * 86400000).toISOString();
-    db.prepare('DELETE FROM reviews WHERE lastCollectedAt < ?').run(cutoff);
-    return db.prepare('SELECT COUNT(*) AS n FROM reviews').get().n;
-  }
-
-  function createJob({ id, config = {}, totalPlaces = 0, notes = null }) {
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO jobs (id, createdAt, updatedAt, status, config, totalPlaces, notes)
-      VALUES (?, ?, ?, 'running', ?, ?, ?)
-    `).run(id, now, now, JSON.stringify(config), totalPlaces, notes);
-  }
-
-  function updateJobStatus(jobId, status, notes = null) {
-    const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE jobs SET status = ?, updatedAt = ?, notes = COALESCE(?, notes)
-      WHERE id = ?
-    `).run(status, now, notes, jobId);
-  }
-
-  function recordJobItem({ jobId, idx, inputUrl, placeId = null, status = 'pending', attempt = 1, error = null, termination = null }) {
-    const now = new Date().toISOString();
-    const termJson = termination ? JSON.stringify(termination) : null;
-    db.prepare(`
-      INSERT INTO job_items (jobId, idx, inputUrl, placeId, status, attempt, error, termination, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(jobId, idx) DO UPDATE SET
-        placeId = COALESCE(excluded.placeId, placeId),
-        status = excluded.status,
-        attempt = excluded.attempt,
-        error = excluded.error,
-        termination = excluded.termination,
-        updatedAt = excluded.updatedAt
-    `).run(jobId, idx, inputUrl, placeId, status, attempt, error, termJson, now);
-  }
-
-  function getJob(jobId) {
-    const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
-    if (!job) return null;
-    const items = db.prepare('SELECT * FROM job_items WHERE jobId = ? ORDER BY idx ASC').all(jobId);
-    return { ...job, config: job.config ? JSON.parse(job.config) : null, items };
-  }
-
-  function selectRecentJobs(limit = 20) {
-    const jobs = db.prepare('SELECT * FROM jobs ORDER BY createdAt DESC LIMIT ?').all(limit);
-    return jobs.map((j) => ({ ...j, config: j.config ? JSON.parse(j.config) : null }));
-  }
-
-  function isPlaceCollected(placeId, maxAgeDays = 30) {
-    if (!placeId) return false;
-    const row = db.prepare('SELECT lastSeenAt FROM businesses WHERE placeId = ?').get(placeId);
-    if (!row || !row.lastSeenAt) return false;
-    if (maxAgeDays == null) return true;
-    const ageMs = Date.now() - new Date(row.lastSeenAt).getTime();
-    return ageMs < maxAgeDays * 86_400_000;
-  }
-
-  return {
-    database: db,
-    upsertBusinessMeta, upsertReview, upsertReviews, countReviews, selectReviews, selectPlaces,
-    deleteReviews, retentionVacuum,
-    createJob, updateJobStatus, recordJobItem, getJob, selectRecentJobs, isPlaceCollected,
-  };
+  function getJob(id){const job=db.prepare('SELECT * FROM jobs WHERE id=?').get(id);if(!job)return null;const items=db.prepare('SELECT * FROM job_items WHERE jobId=? ORDER BY idx').all(id).map(parseItem);return {...job,config:job.config?JSON.parse(job.config):{},items,counts:countsFor(items)};}
+  function selectRecentJobs(limit=20){return db.prepare('SELECT id FROM jobs ORDER BY createdAt DESC,id DESC LIMIT ?').all(limit).map(j=>getJob(j.id));}
+  function markCompleted(placeId,at=timestamp()){db.prepare('UPDATE businesses SET lastCompletedAt=? WHERE placeId=?').run(at,placeId);}
+  function isPlaceCollected(placeId,maxAgeDays=30){const row=db.prepare('SELECT lastCompletedAt FROM businesses WHERE placeId=?').get(placeId);return !!row?.lastCompletedAt&&(maxAgeDays==null||now()-Date.parse(row.lastCompletedAt)<maxAgeDays*86400000);}
+  function close(){if(!closed){db.close();closed=true;}}
+  return {database:db,close,upsertBusinessMeta,upsertReview,upsertReviews,countReviews,selectReviews,selectPlaces,deleteReviews,retentionVacuum,createJob,updateJobStatus,updateJobConfig,recordJobItem,getJob,selectRecentJobs,markCompleted,isPlaceCollected};
 }
