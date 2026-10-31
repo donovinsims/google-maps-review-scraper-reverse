@@ -27,6 +27,7 @@ test('job status: complete, partial, failed', () => {
   assert.equal(jobStatus(done('timeout'), []), 'partial');
   assert.equal(jobStatus(done('pagination-stall'), []), 'partial');
   assert.equal(jobStatus(done('limit-reached'), [rev('x', 'a', { textTruncated: 1 })]), 'partial');
+  assert.equal(jobStatus({ ...done('no-more-reviews'), status: 'partial' }, []), 'partial');
   assert.equal(jobStatus({ ...done('blocked'), status: 'blocked' }, []), 'failed');
   assert.equal(jobStatus({ ...done('x'), status: 'failed' }, []), 'failed');
   assert.equal(jobStatus({ ...done('x'), status: 'pending', termination: null }, []), 'failed');

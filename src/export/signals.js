@@ -12,6 +12,7 @@ export const TOPICS = {
 const COMPLETE = new Set(['limit-reached', 'no-more-reviews', 'no-reviews']);
 
 export function jobStatus(item, reviews) {
+  if (item?.status === 'partial') return 'partial';
   if (!item || item.status !== 'done') return 'failed';
   let reason = null;
   try { reason = JSON.parse(item.termination ?? 'null')?.reason ?? null; } catch { reason = null; }
