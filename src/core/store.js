@@ -49,7 +49,8 @@ export function createStore(dbPath) {
         ownerResponseDatePrecision = COALESCE(excluded.ownerResponseDatePrecision, ownerResponseDatePrecision),
         reviewUrl = COALESCE(excluded.reviewUrl, reviewUrl),
         lastCollectedAt = excluded.lastCollectedAt,
-        collectedCount = collectedCount + 1,
+        -- F25: count once per run; the stream batch and the final result both upsert.
+        collectedCount = collectedCount + CASE WHEN runId IS excluded.runId THEN 0 ELSE 1 END,
         runId = excluded.runId,
         textTruncated = CASE WHEN textTruncated IS NULL THEN excluded.textTruncated
                              WHEN excluded.textTruncated IS NULL THEN textTruncated
