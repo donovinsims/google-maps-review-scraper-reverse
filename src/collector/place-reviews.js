@@ -107,7 +107,8 @@ export function extractInPage(card) {
     reviewerProfileUrl: profBtn ? profBtn.getAttribute('data-href') : (profLink ? profLink.getAttribute('href') : null),
     rating,
     ratingRaw,
-    reviewText: textOf(q('.wiI7pd')),
+    // F1: the owner reply body also uses .wiI7pd; never attribute it to the reviewer.
+    reviewText: textOf([...card.querySelectorAll('.wiI7pd')].find((el) => !(el.closest && el.closest('.CDe7pd'))) ?? null),
     translatedByGoogle,
     publishedDateRaw: dateRaw,
     ownerResponse,
