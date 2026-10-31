@@ -25,7 +25,8 @@ export const S = {
   moreReviews: 'button[aria-label^="More reviews" i], button.more-reviews-button, button:has-text("More reviews")',
   moreText: 'button.w8nwRe[aria-label="See more" i], .w8Iiyf, button[aria-label="More"]',
   reviewsTab: 'button[role="tab"][aria-label*="review" i]',
-  sortButton: 'button[aria-label*="Sort" i]',
+  // Hotels label the sort button with the current order ("Most relevant") instead of "Sort".
+  sortButton: 'button[aria-label*="Sort" i], button[aria-haspopup="true"][aria-label="Most relevant" i], button[aria-haspopup="true"][aria-label="Newest" i], button[aria-haspopup="true"][aria-label="Highest rating" i], button[aria-haspopup="true"][aria-label="Lowest rating" i]',
 };
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

@@ -15,7 +15,7 @@ ${o.emptyPlace ? '' : `<h1>${o.name}</h1><div class="F7nice"><span aria-hidden="
 ${o.limitedView ? `<button role="tab" aria-label="Overview">Overview</button><div>You're seeing a limited view of Google Maps. Learn more</div>` : `
 <button role="tab" aria-label="Reviews for ${o.name}">Reviews</button>
 <button aria-label="More reviews (${count})">More reviews</button>
-${o.sortable ? `<button aria-label="Sort reviews" id="sortbtn">Sort</button><div id="menu" style="display:none"><div role="menuitemradio" id="newest">Newest</div></div>` : ''}
+${o.sortable ? `${o.hotelSort ? '<button aria-haspopup="true" aria-expanded="false" aria-label="Most relevant" id="sortbtn">Most relevant</button>' : '<button aria-label="Sort reviews" id="sortbtn">Sort</button>'}<div id="menu" style="display:none"><div role="menuitemradio" id="newest">Newest</div></div>` : ''}
 <div class="m6QErb DxyBCb" id="feed" style="height:500px;overflow-y:scroll"></div>`}
 <script>
 const O = ${JSON.stringify(o)};
