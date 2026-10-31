@@ -27,6 +27,13 @@ export function ensureBrowserInstalled() {
   }
 }
 
+/** Retry policy. Never retry after a shutdown request, an abort, or a sign-in wall. */
+export function isRetryable(err, abort) {
+  if (abort?.aborted === true) return false;
+  const msg = String(err?.message || err);
+  return !/sign-in-wall|abort/i.test(msg);
+}
+
 export async function launchBatchCollector(urls, config = {}, onComplete = async () => ({}), onBatch = async () => ({})) {
   ensureBrowserInstalled();
 
@@ -61,6 +68,8 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
     const initialFp = pickFingerprint();
     sharedContext = await chromium.launchPersistentContext(profileDir, {
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
+      // F4: let the runner own SIGINT/SIGTERM; Playwright's default handler kills the browser mid-batch.
+      handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       channel,
       proxy,
       viewport: initialFp.viewport,
@@ -78,6 +87,8 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
   } else {
     browser = await chromium.launch({
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
+      // F4: let the runner own SIGINT/SIGTERM; Playwright's default handler kills the browser mid-batch.
+      handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       channel,
       proxy,
       args: commonArgs,
@@ -149,12 +160,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
             onRetry: ({ attempt, delay, error }) => {
               console.log(`  Retry ${attempt}/3 after ${(delay / 1000).toFixed(1)}s (error: ${error.message || error})`);
             },
-            retryableError: (err) => {
-              const msg = String(err?.message || err);
-              // Don't retry if user aborted or explicit sign-in wall
-              if (/sign-in-wall|abort/i.test(msg)) return false;
-              return true;
-            },
+            retryableError: (err) => isRetryable(err, config.abort),
           }
         );
         const done = await onComplete(result, listingUrl, itemIdx);
