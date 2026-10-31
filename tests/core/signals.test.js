@@ -13,7 +13,8 @@ test('explicit topics match stated problems', () => {
   assert.ok(topics('No way to order online.').includes('online_ordering'));
   assert.ok(topics('The hours on Google were wrong and it was closed.').includes('hours'));
   assert.ok(topics('Really hard to find the entrance.').includes('hard_to_find'));
-  assert.ok(topics('They never showed up for the estimate.').includes('booking'));
+  assert.ok(topics('They never showed up for the estimate.').includes('no_show'));
+  assert.ok(!topics('They never showed up for the estimate.').includes('booking'));
   assert.ok(topics('He couldn’t commit to coming at all.').includes('booking'));
   assert.deepEqual(topics('Great service, fair price.'), []);
 });
@@ -84,3 +85,4 @@ test('incomplete jobs never read as no complaints', () => {
   assert.equal(s.businesses[2].complaintSummary, 'no keyword matches in scanned reviews');
   for (const b of s.businesses) assert.ok(!/no complaints/i.test(b.complaintSummary));
 });
+
