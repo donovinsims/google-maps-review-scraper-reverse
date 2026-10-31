@@ -134,6 +134,22 @@ program
     createDashboardServer({ dbPath: opts.db ?? path.join(PROJECT_ROOT, 'data', 'gmaps-reviews.db'), port: opts.port });
   });
 
+program
+  .command('signals')
+  .description('Write signals.json: keyword-matched review complaints per business for one job (human review required)')
+  .option('--job <id>', 'job id (default: latest)')
+  .option('--out <path>', 'output file', 'signals.json')
+  .option('--db <path>', 'database path override')
+  .action(async (opts) => {
+    const { openDb } = await import('../core/db.js');
+    const { signalsFromDb } = await import('../export/signals.js');
+    const db = openDb(opts.db ?? path.join(PROJECT_ROOT, 'data', 'gmaps-reviews.db'));
+    const out = signalsFromDb(db, { jobId: opts.job });
+    fs.writeFileSync(opts.out, JSON.stringify(out, null, 2));
+    for (const b of out.businesses) console.log(`${b.name ?? b.inputUrl}\t${b.jobStatus}\tscanned=${b.reviewsScanned}\tmatches=${b.matches.length}`);
+    console.log(`Wrote ${opts.out}`);
+  });
+
 program.parseAsync(process.argv).catch((err) => {
   console.error(`Error: ${err.message}`);
   process.exit(1);

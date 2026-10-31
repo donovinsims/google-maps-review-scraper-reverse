@@ -147,8 +147,14 @@ test('isPlaceCollected correctly detects existing places within threshold', () =
 
 test('profile directory helpers sanitize names and resolve expected path', async () => {
   const { getProfileDir, hasSavedProfile } = await import('../../src/collector/browser.js');
+  // Isolate from the real user profile root (it exists on a signed-in machine after F12).
+  const os = await import('node:os'); const fsm = await import('node:fs'); const pth = await import('node:path');
+  const prev = process.env.GMR_PROFILE_DIR;
+  process.env.GMR_PROFILE_DIR = fsm.mkdtempSync(pth.join(os.tmpdir(), 'gmr-prof-'));
+  try {
   const dir = getProfileDir('/mock/root', 'my-team!@#');
   assert.ok(dir.includes('my-team___'));
   assert.equal(hasSavedProfile('/nonexistent/path', 'default'), false);
+  } finally { if (prev === undefined) delete process.env.GMR_PROFILE_DIR; else process.env.GMR_PROFILE_DIR = prev; }
 });
 
