@@ -109,3 +109,24 @@ test('batch: concurrency is clamped to 1..4 and all places complete', async () =
   assert.equal(peak, 4);
   assert.equal(f.log.contexts, 8);
 });
+
+test('F11: stealth is off by default: no spoofed UA/timezone, no init scripts, no AutomationControlled flag', async () => {
+  const f = fakePw(); let scripts = 0; const ctxOpts = [];
+  const orig = f.chromium.launch;
+  f.chromium.launch = async (o) => { const b = await orig(o); const nc = b.newContext; b.newContext = async (co) => { ctxOpts.push(co); const c = await nc(co); c.addInitScript = async () => { scripts++; }; return c; }; return b; };
+  await quiet(() => launchBatchCollector(['u0'], { profile: false, deps: { chromium: f.chromium, scrape: async () => ok() } }, async () => ({})));
+  assert.ok(!f.log.launch[0].args.includes('--disable-blink-features=AutomationControlled'));
+  assert.equal(ctxOpts[0].userAgent, undefined);
+  assert.equal(ctxOpts[0].timezoneId, undefined);
+  assert.equal(scripts, 0);
+});
+
+test('F11: --stealth opts in to the anti-detection layer', async () => {
+  const f = fakePw(); let scripts = 0; const ctxOpts = [];
+  const orig = f.chromium.launch;
+  f.chromium.launch = async (o) => { const b = await orig(o); const nc = b.newContext; b.newContext = async (co) => { ctxOpts.push(co); const c = await nc(co); c.addInitScript = async () => { scripts++; }; return c; }; return b; };
+  await quiet(() => launchBatchCollector(['u0'], { profile: false, stealth: true, deps: { chromium: f.chromium, scrape: async () => ok() } }, async () => ({})));
+  assert.ok(f.log.launch[0].args.includes('--disable-blink-features=AutomationControlled'));
+  assert.equal(typeof ctxOpts[0].userAgent, 'string');
+  assert.equal(scripts, 2);
+});

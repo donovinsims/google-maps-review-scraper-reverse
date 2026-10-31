@@ -56,12 +56,28 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
   const channel = (config.chrome !== false && !config.deps && hasSystemChrome()) ? 'chrome' : undefined;
   const proxy = parseProxy(config.proxy);
 
+  // F11: the anti-detection layer (UA/timezone/viewport spoofing, WebGL and navigator.webdriver
+  // overrides, AutomationControlled flag) is opt-in only. Default runs the real browser honestly.
+  const stealth = config.stealth === true;
   const commonArgs = [
     '--lang=en-US',
-    '--disable-blink-features=AutomationControlled',
+    ...(stealth ? ['--disable-blink-features=AutomationControlled'] : []),
     '--no-first-run',
     '--disable-dev-shm-usage',
   ];
+  const HONEST = { viewport: { width: 1280, height: 900 }, locale: 'en-US' };
+  const fpOptions = (fp) => (stealth
+    ? { viewport: fp.viewport, locale: fp.locale, timezoneId: fp.timezoneId, userAgent: fp.userAgent }
+    : { ...HONEST });
+  const applyStealthScripts = async (ctx) => {
+    if (!stealth) return;
+    await ctx.addInitScript(webglOverrideScript());
+    await ctx.addInitScript(() => {
+      try {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      } catch {}
+    });
+  };
 
   let browser = null;
   let sharedContext = null;
@@ -76,18 +92,10 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       channel,
       proxy,
-      viewport: initialFp.viewport,
-      locale: initialFp.locale,
-      timezoneId: initialFp.timezoneId,
-      userAgent: initialFp.userAgent,
+      ...fpOptions(initialFp),
       args: commonArgs,
     });
-    await sharedContext.addInitScript(webglOverrideScript());
-    await sharedContext.addInitScript(() => {
-      try {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      } catch {}
-    });
+    await applyStealthScripts(sharedContext);
   } else {
     browser = await pw.launch({
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
@@ -116,20 +124,9 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
       let context = sharedContext;
       let ownContext = false;
       if (!context) {
-        context = await browser.newContext({
-          viewport: fp.viewport,
-          locale: fp.locale,
-          timezoneId: fp.timezoneId,
-          userAgent: fp.userAgent,
-          proxy,
-        });
+        context = await browser.newContext({ ...fpOptions(fp), proxy });
         await context.addCookies(consentCookies());
-        await context.addInitScript(webglOverrideScript());
-        await context.addInitScript(() => {
-          try {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          } catch {}
-        });
+        await applyStealthScripts(context);
         ownContext = true;
       }
 

@@ -51,6 +51,7 @@ program
   .option('--profile <name>', 'persistent browser profile name')
   .option('--no-profile', 'force anonymous execution without saved profile')
   .option('--headless', 'run in headless mode', false)
+  .option('--stealth', 'opt in to the anti-detection layer (spoofed UA/WebGL/webdriver); off by default (F11)', false)
   .option('--proxy <url>', 'proxy server URL (http://user:pass@host:port or socks5://...)')
   .option('--incremental', 'skip businesses already collected recently')
   .option('--resume <jobId>', 'resume unfinished collection job')
@@ -65,6 +66,7 @@ program
       concurrency: opts.concurrency,
       profile: opts.profile === false ? false : (opts.profile ?? undefined),
       headless: opts.headless,
+      stealth: opts.stealth === true,
       proxy: opts.proxy,
       incremental: opts.incremental ?? false,
       resume: opts.resume,
