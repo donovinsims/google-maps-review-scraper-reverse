@@ -35,7 +35,11 @@ export function isRetryable(err, abort) {
 }
 
 export async function launchBatchCollector(urls, config = {}, onComplete = async () => ({}), onBatch = async () => ({})) {
-  ensureBrowserInstalled();
+  // Test seam: config.deps can supply chromium / scrape / retryBaseDelayMs (no browser needed).
+  const deps = config.deps ?? {};
+  const pw = deps.chromium ?? chromium;
+  const scrape = deps.scrape ?? scrapePlaceReviews;
+  if (!config.deps) ensureBrowserInstalled();
 
   const summary = [];
   const concurrency = Math.min(Math.max(config.concurrency ?? 1, 1), 4);
@@ -49,7 +53,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
     }
   }
 
-  const channel = (config.chrome !== false && hasSystemChrome()) ? 'chrome' : undefined;
+  const channel = (config.chrome !== false && !config.deps && hasSystemChrome()) ? 'chrome' : undefined;
   const proxy = parseProxy(config.proxy);
 
   const commonArgs = [
@@ -66,7 +70,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
     console.log(`Using persistent profile (${channel ?? 'chromium'}): ${path.relative(PROJECT_ROOT, profileDir)}`);
     fs.mkdirSync(profileDir, { recursive: true });
     const initialFp = pickFingerprint();
-    sharedContext = await chromium.launchPersistentContext(profileDir, {
+    sharedContext = await pw.launchPersistentContext(profileDir, {
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
       // F4: let the runner own SIGINT/SIGTERM; Playwright's default handler kills the browser mid-batch.
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
@@ -85,7 +89,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
       } catch {}
     });
   } else {
-    browser = await chromium.launch({
+    browser = await pw.launch({
       headless: config.headless === true, // F21: headed by default (headless triggers Google's limited view)
       // F4: let the runner own SIGINT/SIGTERM; Playwright's default handler kills the browser mid-batch.
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
@@ -137,7 +141,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
           async () => {
             if (page) await page.close().catch(() => {});
             page = await context.newPage();
-            return await scrapePlaceReviews(page, {
+            return await scrape(page, {
               url: listingUrl,
               sortMode: config.sort === 'default' ? undefined : config.sort,
               maxReviews: config.limit,
@@ -156,7 +160,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
           },
           {
             maxAttempts: 3,
-            baseDelayMs: 2000,
+            baseDelayMs: deps.retryBaseDelayMs ?? 2000,
             onRetry: ({ attempt, delay, error }) => {
               console.log(`  Retry ${attempt}/3 after ${(delay / 1000).toFixed(1)}s (error: ${error.message || error})`);
             },
