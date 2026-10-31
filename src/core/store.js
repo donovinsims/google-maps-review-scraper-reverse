@@ -42,10 +42,14 @@ export function createStore(dbPath) {
         originalLanguage = COALESCE(excluded.originalLanguage, originalLanguage),
         translatedByGoogle = COALESCE(excluded.translatedByGoogle, translatedByGoogle),
         publishedDateRaw = COALESCE(excluded.publishedDateRaw, publishedDateRaw),
-        publishedDateParsed = COALESCE(excluded.publishedDateParsed, publishedDateParsed),
+        -- F7: a relative date ("2 months ago") re-parsed later drifts; keep the first estimate
+        -- while the raw text is unchanged.
+        publishedDateParsed = CASE WHEN publishedDateParsed IS NOT NULL AND publishedDateRaw IS excluded.publishedDateRaw
+                                   THEN publishedDateParsed ELSE COALESCE(excluded.publishedDateParsed, publishedDateParsed) END,
         datePrecision = COALESCE(excluded.datePrecision, datePrecision),ownerResponse = COALESCE(excluded.ownerResponse, ownerResponse),
         ownerResponseDateRaw = COALESCE(excluded.ownerResponseDateRaw, ownerResponseDateRaw),
-        ownerResponseDateParsed = COALESCE(excluded.ownerResponseDateParsed, ownerResponseDateParsed),
+        ownerResponseDateParsed = CASE WHEN ownerResponseDateParsed IS NOT NULL AND ownerResponseDateRaw IS excluded.ownerResponseDateRaw
+                                       THEN ownerResponseDateParsed ELSE COALESCE(excluded.ownerResponseDateParsed, ownerResponseDateParsed) END,
         ownerResponseDatePrecision = COALESCE(excluded.ownerResponseDatePrecision, ownerResponseDatePrecision),
         reviewUrl = COALESCE(excluded.reviewUrl, reviewUrl),
         lastCollectedAt = excluded.lastCollectedAt,

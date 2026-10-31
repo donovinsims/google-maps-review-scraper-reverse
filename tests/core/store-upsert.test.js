@@ -18,3 +18,16 @@ test('F25: double upsert in one run counts the review once; a new run counts aga
   s.upsertReviews([rec()], 'run-b');
   assert.equal(row(s).collectedCount, 2);
 });
+
+test('F7: re-collecting a relative date keeps the first parsed date', () => {
+  const s = createStore(tmpDb());
+  s.upsertBusinessMeta({ placeId: 'p1', listingUrl: 'https://u' });
+  s.upsertReviews([rec({ publishedDateRaw: '2 months ago', publishedDateParsed: '2026-08-31T00:00:00.000Z',
+    ownerResponseDateRaw: 'a month ago', ownerResponseDateParsed: '2026-09-30T00:00:00.000Z' })], 'run-a');
+  s.upsertReviews([rec({ publishedDateRaw: '2 months ago', publishedDateParsed: '2026-09-20T00:00:00.000Z',
+    ownerResponseDateRaw: 'a month ago', ownerResponseDateParsed: '2026-10-20T00:00:00.000Z' })], 'run-b');
+  assert.equal(row(s).publishedDateParsed, '2026-08-31T00:00:00.000Z');
+  assert.equal(row(s).ownerResponseDateParsed, '2026-09-30T00:00:00.000Z');
+  s.upsertReviews([rec({ publishedDateRaw: '3 months ago', publishedDateParsed: '2026-07-20T00:00:00.000Z' })], 'run-c');
+  assert.equal(row(s).publishedDateParsed, '2026-07-20T00:00:00.000Z');
+});
