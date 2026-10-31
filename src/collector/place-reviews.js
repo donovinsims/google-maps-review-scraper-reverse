@@ -104,7 +104,7 @@ export function extractInPage(card) {
   const reviewTextEl = [...card.querySelectorAll('.wiI7pd')].find((el) => !(el.closest && el.closest('.CDe7pd'))) ?? null;
   const collapsedBtn = card.querySelector('button[aria-label="See more" i][aria-expanded="false"]');
   const rt = textOf(reviewTextEl);
-  const textTruncated = rt == null ? null : (!!collapsedBtn || /(\u2026|\.\.\.)$/.test(rt));
+  const textTruncated = rt == null ? null : (!!collapsedBtn || /\u2026$/.test(rt));
 
   return {
     textTruncated,

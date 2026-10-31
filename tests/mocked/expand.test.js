@@ -19,3 +19,9 @@ test('F23: text that cannot be expanded is flagged textTruncated, never stored a
   assert.ok(res.reviews.length > 0);
   assert.ok(res.reviews.every((r) => r.textTruncated === true));
 });
+
+test('F23: a reviewer\'s own trailing "...." is not flagged as truncated', { timeout: 60_000 }, async () => {
+  const res = await withFakeMaps({ total: 1, batch: 1, cards: ['<div class="jftiEf" data-review-id="dots"><div class="d4r55">Juan</div><span class="kvMYJc" aria-label="1 star"></span><span class="rsqaWe">6 days ago</span><div class="MyEned"><span class="wiI7pd">bad food overpriced....</span></div></div>'] }, async (ctx) =>
+    scrapePlaceReviews(await ctx.newPage(), { url: PLACE_URL, maxReviews: 1, overrides: FAST }));
+  assert.equal(res.reviews[0].textTruncated, false);
+});
