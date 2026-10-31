@@ -12,6 +12,7 @@ export function openDb(dbPath = 'data/gmaps-reviews.db') {
   const db = new DatabaseSync(abs);
   db.exec(`
     PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS businesses (
       placeId       TEXT PRIMARY KEY,
       name          TEXT,

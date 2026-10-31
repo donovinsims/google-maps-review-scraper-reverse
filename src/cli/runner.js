@@ -71,7 +71,17 @@ export async function collectForPlaces(config) {
     const launchBatchCollector = config.collector ?? (await import('../collector/batch.js')).launchBatchCollector;
 
     // Streaming batch callback: persist to SQLite immediately as cards load
-    const onBatch = async (data, listingUrl) => {
+    // F6: a failed streaming write must not be swallowed. Remember it per item and
+    // surface it as db-error when the item completes.
+    const batchErrors = new Map();
+    const onBatch = async (data, listingUrl, idx = 0) => {
+      try { persistBatch(data, listingUrl); }
+      catch (err) {
+        if (!batchErrors.has(idx)) batchErrors.set(idx, err);
+        console.error(`  DB write failed during streaming: ${err?.message ?? err}`);
+      }
+    };
+    const persistBatch = (data, listingUrl) => {
       const placeId = data.place?.placeId;
       if (placeId) {
         db.upsertBusinessMeta({
@@ -116,6 +126,10 @@ export async function collectForPlaces(config) {
           db.upsertReviews(normalized, jobId);
         }
 
+        if (batchErrors.has(idx)) {
+          const err = batchErrors.get(idx);
+          result.termination = { reason: 'db-error', detail: `streaming DB write failed: ${err?.message ?? err}`, collectorTermination: result.termination ?? null };
+        }
         const itemStatus = classifyItem(result);
         if (result.termination) {
           result.termination.expectedCount = result.place?.reviewsCount ?? null;

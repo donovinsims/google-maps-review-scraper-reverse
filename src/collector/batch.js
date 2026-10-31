@@ -136,7 +136,7 @@ export async function launchBatchCollector(urls, config = {}, onComplete = async
               },
             }, (event, data) => {
               if (event === 'stream-batch' && onBatch) {
-                onBatch(data, listingUrl, itemIdx).catch(() => {});
+                onBatch(data, listingUrl, itemIdx).catch((e) => console.error(`  onBatch error: ${e?.message ?? e}`));
               }
             });
           },
