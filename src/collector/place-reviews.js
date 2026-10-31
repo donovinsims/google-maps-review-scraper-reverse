@@ -77,7 +77,10 @@ export function extractInPage(card) {
       : true;
   }
 
-  const dateRaw = textOf(q('span.rsqaWe'));
+  // Hotel cards use "a month ago on Tripadvisor" in span.xRkPPb instead of span.rsqaWe (F28).
+  const hotelDateEl = [...card.querySelectorAll('span.xRkPPb')].find((el) => !(el.closest && el.closest('.CDe7pd'))) ?? null;
+  const hotelDate = textOf(hotelDateEl);
+  const dateRaw = textOf(q('span.rsqaWe')) ?? (hotelDate ? hotelDate.replace(/\s+on\s+\S.*$/, '') : null);
 
   const ownerEl = q('.CDe7pd');
   let ownerResponse = null;
